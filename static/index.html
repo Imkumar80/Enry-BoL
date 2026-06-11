@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BOLNA — Voice OS for Kiranas & Indian SMBs</title>
+    <!-- Google Fonts & Icons -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="glass-bg"></div>
+    <div class="app-container">
+        <!-- HEADER -->
+        <header class="app-header">
+            <div class="logo-area">
+                <span class="material-icons-round logo-icon">settings_voice</span>
+                <div class="logo-text">
+                    <h1>BOLNA <span>बोलना</span></h1>
+                    <p>Voice OS for Kiranas & SMBs</p>
+                </div>
+            </div>
+            <div class="status-badge" id="statusBadge">
+                <span class="pulse-dot green"></span>
+                <span>Active Session</span>
+            </div>
+        </header>
+
+        <!-- MAIN LAYOUT -->
+        <main class="app-main">
+            <!-- LEFT PANEL: Ledger & Credit (Khata) -->
+            <section class="panel panel-left" id="khataPanel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="material-icons-round">account_balance_wallet</span>
+                        <h2>Udhaar Khata (Ledger)</h2>
+                    </div>
+                    <button class="btn-icon" id="btnAddCustomer" title="Add Customer">
+                        <span class="material-icons-round">person_add</span>
+                    </button>
+                </div>
+
+                <!-- Customer Directory -->
+                <div class="sub-panel">
+                    <h3>Customers</h3>
+                    <div class="customer-list" id="customerList">
+                        <!-- Loaded via JS -->
+                        <div class="loading-spinner"></div>
+                    </div>
+                </div>
+
+                <!-- Credit/Payment History -->
+                <div class="sub-panel">
+                    <h3>Recent Transactions</h3>
+                    <div class="transaction-history" id="transactionHistory">
+                        <!-- Loaded via JS -->
+                    </div>
+                </div>
+            </section>
+
+            <!-- MIDDLE PANEL: POS Billing & Cart -->
+            <section class="panel panel-middle" id="billingPanel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="material-icons-round">shopping_cart</span>
+                        <h2>POS Billing (Bill Calculator)</h2>
+                    </div>
+                </div>
+
+                <!-- Current Bill Context -->
+                <div class="cart-context">
+                    <div class="context-label">Active Customer:</div>
+                    <div class="context-value" id="activeCustomerName">Walk-in Customer</div>
+                </div>
+
+                <!-- Cart Table -->
+                <div class="cart-container">
+                    <table class="cart-table">
+                        <thead>
+                            <tr>
+                                <th>Product</th>
+                                <th>Qty</th>
+                                <th>Price</th>
+                                <th>Total</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="cartItems">
+                            <!-- Items added via Voice/JS -->
+                            <tr class="empty-cart-row">
+                                <td colspan="5" class="empty-text">Cart is empty. Speak "Ek packet Britannia biscuit add karo" or select a product.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Bill Total & Checkout -->
+                <div class="cart-summary">
+                    <div class="summary-row">
+                        <span>Items Count:</span>
+                        <span id="cartCount">0</span>
+                    </div>
+                    <div class="summary-row grand-total">
+                        <span>Grand Total:</span>
+                        <span id="cartTotal">₹0.00</span>
+                    </div>
+                    <div class="checkout-actions">
+                        <button class="btn btn-secondary" id="btnClearCart">Clear</button>
+                        <button class="btn btn-primary" id="btnCheckout">
+                            <span class="material-icons-round">receipt_long</span>
+                            Finish & Print Bill
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- RIGHT PANEL: Voice OS Controller -->
+            <section class="panel panel-right" id="voicePanel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="material-icons-round">graphic_eq</span>
+                        <h2>Voice Assistant Layer</h2>
+                    </div>
+                </div>
+
+                <!-- Glowing Microphone Area -->
+                <div class="mic-container">
+                    <div class="mic-ripple" id="micRipple"></div>
+                    <button class="mic-btn" id="btnMic">
+                        <span class="material-icons-round" id="micIcon">mic</span>
+                    </button>
+                    <div class="voice-status" id="voiceStatus">Click the mic or press Space to speak</div>
+                </div>
+
+                <!-- Command Transcription Screen -->
+                <div class="console-box">
+                    <div class="console-label">Live Transcription:</div>
+                    <div class="console-text placeholder-text" id="liveTranscript">
+                        "E.g., Ramesh ka bill banao, 2 packet biscuit daal do..."
+                    </div>
+                </div>
+
+                <!-- AI Parser Output Details -->
+                <div class="nlu-output" id="nluOutputCard" style="display: none;">
+                    <h3>AI Intent Parser Output</h3>
+                    <div class="nlu-details">
+                        <div class="nlu-row">
+                            <span class="nlu-key">Intent:</span>
+                            <span class="nlu-val" id="nluIntent">-</span>
+                        </div>
+                        <div class="nlu-row">
+                            <span class="nlu-key">Explanation:</span>
+                            <span class="nlu-val" id="nluExplanation">-</span>
+                        </div>
+                        <div class="nlu-entities" id="nluEntitiesContainer">
+                            <!-- Dynamic Entity Badges -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Manual Command Input (Keyboard Override) -->
+                <div class="manual-input-box">
+                    <input type="text" id="txtManualCommand" placeholder="Type a Hinglish/English command...">
+                    <button id="btnSendCommand">
+                        <span class="material-icons-round">send</span>
+                    </button>
+                </div>
+
+                <!-- Voice Action Log Timeline -->
+                <div class="sub-panel">
+                    <h3>Voice OS Operations Log</h3>
+                    <div class="operations-log" id="operationsLog">
+                        <div class="log-item system">
+                            <span class="log-time">17:00</span>
+                            <span class="log-msg">Voice OS initialization successful. Offline Regex fallback ready.</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- POPUP MODALS -->
+    <!-- Add Customer Modal -->
+    <div class="modal" id="modalCustomer" style="display: none;">
+        <div class="modal-content">
+            <span class="close-btn" id="btnCloseCustomerModal">&times;</span>
+            <h2>Add New Customer (Khata)</h2>
+            <form id="formAddCustomer">
+                <div class="form-group">
+                    <label for="custName">Customer Name:</label>
+                    <input type="text" id="custName" required placeholder="e.g. Pinky">
+                </div>
+                <div class="form-group">
+                    <label for="custPhone">Phone Number:</label>
+                    <input type="text" id="custPhone" placeholder="e.g. 9876543210">
+                </div>
+                <div class="form-group">
+                    <label for="custBalance">Initial Credit Owed (Udhaar):</label>
+                    <input type="number" id="custBalance" step="0.01" value="0.00">
+                </div>
+                <button type="submit" class="btn btn-primary">Save Customer</button>
+            </form>
+        </div>
+    </div>
+    
+    <script src="/static/app.js"></script>
+</body>
+</html>

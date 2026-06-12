@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Response, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
@@ -268,6 +268,115 @@ def parse_and_execute_command(req: CommandRequest, conn=Depends(db.get_db)):
         action_result["success"] = False
 
     return action_result
+
+@app.post("/api/stt")
+async def speech_to_text(audio: UploadFile = File(...)):
+    """Transcribes uploaded audio using Google's free Speech Recognition API (server-side)."""
+    import speech_recognition as sr
+    import struct
+    import io
+    
+    try:
+        raw_pcm = await audio.read()
+        
+        if len(raw_pcm) < 100:
+            raise HTTPException(status_code=400, detail="Audio too short")
+        
+        # Wrap raw 16-bit PCM in a WAV header so speech_recognition can parse it
+        sample_rate = 16000
+        num_channels = 1
+        bits_per_sample = 16
+        byte_rate = sample_rate * num_channels * bits_per_sample // 8
+        block_align = num_channels * bits_per_sample // 8
+        data_size = len(raw_pcm)
+        
+        wav_buffer = io.BytesIO()
+        # RIFF header
+        wav_buffer.write(b'RIFF')
+        wav_buffer.write(struct.pack('<I', 36 + data_size))
+        wav_buffer.write(b'WAVE')
+        # fmt chunk
+        wav_buffer.write(b'fmt ')
+        wav_buffer.write(struct.pack('<I', 16))  # chunk size
+        wav_buffer.write(struct.pack('<H', 1))   # PCM format
+        wav_buffer.write(struct.pack('<H', num_channels))
+        wav_buffer.write(struct.pack('<I', sample_rate))
+        wav_buffer.write(struct.pack('<I', byte_rate))
+        wav_buffer.write(struct.pack('<H', block_align))
+        wav_buffer.write(struct.pack('<H', bits_per_sample))
+        # data chunk
+        wav_buffer.write(b'data')
+        wav_buffer.write(struct.pack('<I', data_size))
+        wav_buffer.write(raw_pcm)
+        wav_buffer.seek(0)
+        
+        recognizer = sr.Recognizer()
+        with sr.AudioFile(wav_buffer) as source:
+            audio_data = recognizer.record(source)
+        
+        # Use Google's free web API (no key needed) with Hindi+English support
+        text = recognizer.recognize_google(audio_data, language="hi-IN")
+        return {"text": text, "success": True}
+        
+    except sr.UnknownValueError:
+        return {"text": "", "success": False, "error": "Could not understand audio"}
+    except sr.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"Google STT service error: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"STT error: {str(e)}")
+
+@app.get("/api/tts")
+def tts_proxy(text: str):
+    """Generates audio for given text using Cartesia TTS API."""
+    from dotenv import load_dotenv
+    load_dotenv(override=True)  # Dynamically reload latest .env updates
+    
+    api_key = os.getenv("CARTESIA_API_KEY")
+    if not api_key or api_key == "your_cartesia_key_here":
+        raise HTTPException(status_code=400, detail="Cartesia API key not configured")
+        
+    voice_id = os.getenv("CARTESIA_VOICE_ID", "3b554273-4299-48b9-9aaf-eefd438e3941")
+    url = "https://api.cartesia.ai/tts/bytes"
+    
+    payload = {
+        "model_id": "sonic-latest",
+        "transcript": text,
+        "voice": {
+            "mode": "id",
+            "id": voice_id
+        },
+        "output_format": {
+            "container": "mp3",
+            "encoding": "mp3",
+            "sample_rate": 44100
+        }
+    }
+    
+    import json
+    import urllib.request
+    import urllib.error
+    
+    encoded_data = json.dumps(payload).encode('utf-8')
+    req = urllib.request.Request(
+        url,
+        data=encoded_data,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Cartesia-Version": "2024-06-10",
+            "Content-Type": "application/json"
+        },
+        method="POST"
+    )
+    
+    try:
+        with urllib.request.urlopen(req) as response:
+            audio_bytes = response.read()
+            return Response(content=audio_bytes, media_type="audio/mpeg")
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode('utf-8')
+        raise HTTPException(status_code=e.code, detail=f"Cartesia error: {err_body}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))

@@ -3,6 +3,7 @@ import json
 import asyncio
 from datetime import datetime
 from typing import Annotated
+# pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 
 # Cartesia Line imports
@@ -13,6 +14,10 @@ import db
 import parser
 
 load_dotenv()
+
+# Ensure litellm can find the OpenRouter API key
+# litellm reads OPENROUTER_API_KEY from the environment directly
+os.environ["OPENROUTER_API_KEY"] = os.getenv("OPENROUTER_API_KEY", "")
 
 # --- 1. Define Cartesia Line Loopback Tools ---
 
@@ -154,7 +159,7 @@ async def get_agent(env, call_request):
     )
     
     return LlmAgent(
-        model="openrouter/qwen/qwen-2.5-72b-instruct:free",
+        model="openrouter/qwen/qwen3-coder:free",
         api_key=os.getenv("OPENROUTER_API_KEY"),
         tools=[execute_ledger_command, end_call],
         config=LlmConfig(

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Microphone Test (Backend STT)</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 50px auto; background: #1a1a2e; color: #eee; }
+        button { padding: 20px 40px; font-size: 18px; cursor: pointer; background: #e94560; color: white; border: none; border-radius: 12px; margin: 5px; }
+        button:hover { background: #ff6b81; }
+        button:disabled { background: #555; cursor: not-allowed; }
+        #log { margin-top: 20px; padding: 15px; background: #16213e; border-radius: 8px; min-height: 200px; white-space: pre-wrap; font-size: 14px; }
+        h1 { color: #e94560; }
+        .success { color: #2ecc71; }
+        .error { color: #e74c3c; }
+        .info { color: #3498db; }
+    </style>
+</head>
+<body>
+    <h1>🎤 Backend STT Test</h1>
+    <p>Click "Start Recording", speak, then click "Stop & Transcribe". This uses the new backend STT (no browser speech API).</p>
+    <button id="btnRec">🎤 Start Recording</button>
+    <button id="btnStop" disabled>⏹ Stop & Transcribe</button>
+    <button id="btnTTS">🔊 Test TTS</button>
+    <div id="log">Waiting...\n</div>
+
+    <script>
+        const log = document.getElementById('log');
+        const btnRec = document.getElementById('btnRec');
+        const btnStop = document.getElementById('btnStop');
+        const btnTTS = document.getElementById('btnTTS');
+        
+        let micStream = null;
+        let audioCtx = null;
+        let processor = null;
+        let chunks = [];
+
+        function addLog(msg, cls) {
+            const span = document.createElement('span');
+            span.className = cls || '';
+            span.textContent = msg + '\n';
+            log.appendChild(span);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        btnRec.addEventListener('click', async () => {
+            try {
+                micStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true } 
+                });
+                addLog('✓ Microphone access granted!', 'success');
+                
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                addLog(`Audio context sample rate: ${audioCtx.sampleRate}Hz`, 'info');
+                
+                const source = audioCtx.createMediaStreamSource(micStream);
+                processor = audioCtx.createScriptProcessor(4096, 1, 1);
+                chunks = [];
+                
+                processor.onaudioprocess = (e) => {
+                    const float32 = e.inputBuffer.getChannelData(0);
+                    const int16 = new Int16Array(float32.length);
+                    for (let i = 0; i < float32.length; i++) {
+                        const s = Math.max(-1, Math.min(1, float32[i]));
+                        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                    }
+                    chunks.push(int16);
+                };
+                
+                source.connect(processor);
+                processor.connect(audioCtx.destination);
+                
+                addLog('🎤 Recording... Speak now!', 'info');
+                btnRec.disabled = true;
+                btnStop.disabled = false;
+                
+            } catch (err) {
+                addLog(`✗ Microphone ERROR: ${err.message}`, 'error');
+            }
+        });
+
+        btnStop.addEventListener('click', async () => {
+            btnStop.disabled = true;
+            btnRec.disabled = false;
+            
+            if (processor) { processor.disconnect(); processor = null; }
+            if (audioCtx) { audioCtx.close(); audioCtx = null; }
+            if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+            
+            if (chunks.length === 0) {
+                addLog('✗ No audio captured!', 'error');
+                return;
+            }
+            
+            const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
+            const combined = new Int16Array(totalLength);
+            let offset = 0;
+            for (const c of chunks) { combined.set(c, offset); offset += c.length; }
+            chunks = [];
+            
+            addLog(`Captured ${totalLength} samples (${(totalLength/16000).toFixed(1)}s). Sending to backend /api/stt...`, 'info');
+            
+            const blob = new Blob([combined.buffer], { type: 'application/octet-stream' });
+            const formData = new FormData();
+            formData.append('audio', blob, 'recording.pcm');
+            
+            try {
+                const response = await fetch('/api/stt', { method: 'POST', body: formData });
+                const result = await response.json();
+                addLog(`Server response: ${JSON.stringify(result)}`, 'info');
+                
+                if (result.success && result.text) {
+                    addLog(`✓ TRANSCRIPTION: "${result.text}"`, 'success');
+                } else {
+                    addLog(`✗ STT failed: ${result.error || result.detail || 'unknown'}`, 'error');
+                }
+            } catch (err) {
+                addLog(`✗ Network error: ${err.message}`, 'error');
+            }
+        });
+
+        btnTTS.addEventListener('click', () => {
+            addLog('Testing TTS...', 'info');
+            const audio = new Audio('/api/tts?text=Namaste, yeh Enry hai. Aapka voice assistant.');
+            audio.onplay = () => addLog('✓ TTS PLAYING', 'success');
+            audio.onended = () => addLog('✓ TTS finished', 'success');
+            audio.onerror = () => addLog('✗ TTS error', 'error');
+            audio.play().catch(e => addLog('✗ TTS blocked: ' + e.message, 'error'));
+        });
+    </script>
+</body>
+</html>

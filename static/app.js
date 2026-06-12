@@ -7,9 +7,13 @@ let customers = [];
 let inventory = [];
 let transactions = [];
 
-// Speech Recognition Variables
-let recognition = null;
+// Speech Recognition Variables (Web Audio API + Backend STT)
 let isListening = false;
+let isAgentSpeaking = false;
+let micStream = null;
+let audioContext = null;
+let scriptProcessor = null;
+let audioChunks = [];
 
 // Voice Agent WebSocket
 let voiceSocket = null;
@@ -194,82 +198,141 @@ function removeCartItem(index) {
 // --- VOICE OS OPERATIONS ---
 
 function initSpeechRecognition() {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-        voiceStatus.innerText = "Speech recognition not supported in this browser. Use manual input.";
+    // Check for microphone support
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        voiceStatus.innerText = "Microphone access not supported. Use manual input.";
         btnMic.disabled = true;
         return;
     }
+    voiceStatus.innerText = "Click the Microphone to speak a command.";
+}
 
-    recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    // Set language to English (Indian) which resolves Hinglish code-switching best,
-    // combined with browser intelligence.
-    recognition.lang = 'en-IN'; 
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-
-    recognition.onstart = () => {
+async function startRecording() {
+    try {
+        // Request microphone access
+        micStream = await navigator.mediaDevices.getUserMedia({ 
+            audio: { 
+                sampleRate: 16000, 
+                channelCount: 1, 
+                echoCancellation: true,
+                noiseSuppression: true 
+            } 
+        });
+        
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        const source = audioContext.createMediaStreamSource(micStream);
+        
+        // ScriptProcessorNode to capture raw PCM
+        scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+        audioChunks = [];
+        
+        scriptProcessor.onaudioprocess = (e) => {
+            if (!isListening) return;
+            const float32 = e.inputBuffer.getChannelData(0);
+            // Convert Float32 to Int16 PCM
+            const int16 = new Int16Array(float32.length);
+            for (let i = 0; i < float32.length; i++) {
+                const s = Math.max(-1, Math.min(1, float32[i]));
+                int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            }
+            audioChunks.push(int16);
+        };
+        
+        source.connect(scriptProcessor);
+        scriptProcessor.connect(audioContext.destination);
+        
         isListening = true;
         btnMic.classList.add('listening');
         micIcon.innerText = 'mic_none';
-        voiceStatus.innerText = "Listening to Hinglish command...";
+        voiceStatus.innerText = "🎤 Listening... Click mic again when done.";
         liveTranscript.classList.remove('placeholder-text');
         liveTranscript.innerText = "Listening...";
-    };
-
-    recognition.onresult = (event) => {
-        const resultText = event.results[0][0].transcript;
-        liveTranscript.innerText = `"${resultText}"`;
         
-        if (voiceSocket && voiceSocket.readyState === WebSocket.OPEN) {
+    } catch (err) {
+        console.error("Microphone access denied:", err);
+        voiceStatus.innerText = "Microphone access denied. Please allow mic permissions.";
+    }
+}
+
+async function stopRecordingAndTranscribe() {
+    isListening = false;
+    btnMic.classList.remove('listening');
+    micIcon.innerText = 'mic';
+    voiceStatus.innerText = "Transcribing...";
+    liveTranscript.innerText = "Processing audio...";
+    
+    // Stop the mic stream
+    if (scriptProcessor) { scriptProcessor.disconnect(); scriptProcessor = null; }
+    if (audioContext) { audioContext.close(); audioContext = null; }
+    if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+    
+    // Concatenate all PCM chunks into one buffer
+    if (audioChunks.length === 0) {
+        voiceStatus.innerText = "No audio captured. Try again.";
+        return;
+    }
+    
+    const totalLength = audioChunks.reduce((acc, chunk) => acc + chunk.length, 0);
+    const combined = new Int16Array(totalLength);
+    let offset = 0;
+    for (const chunk of audioChunks) {
+        combined.set(chunk, offset);
+        offset += chunk.length;
+    }
+    audioChunks = [];
+    
+    // Send to backend /api/stt
+    const blob = new Blob([combined.buffer], { type: 'application/octet-stream' });
+    const formData = new FormData();
+    formData.append('audio', blob, 'recording.pcm');
+    
+    try {
+        const response = await fetch('/api/stt', { method: 'POST', body: formData });
+        const result = await response.json();
+        
+        if (result.success && result.text) {
+            const resultText = result.text.trim();
+            liveTranscript.innerText = `"${resultText}"`;
             addLogItem(`You: "${resultText}"`, 'system');
             
-            // Stream the user turn state and transcript
-            voiceSocket.send(JSON.stringify({
-                type: "user_state",
-                value: "speaking"
-            }));
-            voiceSocket.send(JSON.stringify({
-                type: "message",
-                content: resultText
-            }));
-            voiceSocket.send(JSON.stringify({
-                type: "user_state",
-                value: "idle"
-            }));
+            // Send to voice agent or command parser
+            if (voiceSocket && voiceSocket.readyState === WebSocket.OPEN) {
+                voiceSocket.send(JSON.stringify({ type: "user_state", value: "speaking" }));
+                voiceSocket.send(JSON.stringify({ type: "message", content: resultText }));
+                voiceSocket.send(JSON.stringify({ type: "user_state", value: "idle" }));
+            } else {
+                submitCommand(resultText);
+            }
+            voiceStatus.innerText = "Command sent! Click mic to speak again.";
         } else {
-            submitCommand(resultText);
+            liveTranscript.innerText = result.error || "Could not understand. Try again.";
+            voiceStatus.innerText = "Could not understand. Click mic to try again.";
         }
-    };
-
-    recognition.onerror = (event) => {
-        console.error("Speech Recognition Error:", event.error);
-        voiceStatus.innerText = `Error: ${event.error}`;
-        liveTranscript.innerText = "Could not record audio. Try typing manually.";
-        liveTranscript.classList.add('placeholder-text');
-        stopListening();
-    };
-
-    recognition.onend = () => {
-        stopListening();
-    };
+    } catch (err) {
+        console.error("STT request failed:", err);
+        voiceStatus.innerText = "STT error. Check backend connection.";
+        liveTranscript.innerText = "Server error during transcription.";
+    }
 }
 
 function toggleListening() {
-    if (!recognition) return;
+    if (isAgentSpeaking) return; // Don't start mic while agent is speaking
     if (isListening) {
-        recognition.stop();
+        stopRecordingAndTranscribe();
     } else {
-        recognition.start();
+        startRecording();
     }
 }
 
 function stopListening() {
     isListening = false;
+    if (scriptProcessor) { scriptProcessor.disconnect(); scriptProcessor = null; }
+    if (audioContext) { audioContext.close(); audioContext = null; }
+    if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+    audioChunks = [];
     btnMic.classList.remove('listening');
     micIcon.innerText = 'mic';
-    voiceStatus.innerText = "Click mic or press Space to speak";
+    voiceStatus.innerText = "Microphone paused. Click to resume.";
 }
 
 // Submit spoken or typed command to FastAPI
@@ -366,6 +429,35 @@ function handleParsedActionResult(result) {
 
 // Browser Text-To-Speech (Hinglish Accent fallback)
 function speak(text) {
+    if (!text) return;
+
+    // Echo Cancellation: Pause mic while speaking
+    isAgentSpeaking = true;
+    if (isListening) {
+        stopListening();
+    }
+
+    // First attempt to play Cartesia TTS from our proxy
+    const audioUrl = `/api/tts?text=${encodeURIComponent(text)}`;
+    const audio = new Audio(audioUrl);
+
+    audio.onended = () => {
+        isAgentSpeaking = false;
+        voiceStatus.innerText = "Click the Microphone to speak a command.";
+    };
+
+    audio.play()
+        .then(() => {
+            console.log("Playing speech via Cartesia TTS...");
+            voiceStatus.innerText = "🔊 Enry is speaking...";
+        })
+        .catch(err => {
+            console.warn("Cartesia TTS API unavailable or not configured. Falling back to browser SpeechSynthesis.", err);
+            browserSpeakFallback(text);
+        });
+}
+
+function browserSpeakFallback(text) {
     if ('speechSynthesis' in window) {
         window.speechSynthesis.cancel(); // Cancel active speech
         const utterance = new SpeechSynthesisUtterance(text);
@@ -378,9 +470,18 @@ function speak(text) {
             utterance.voice = indianVoice;
         }
         
+        utterance.onend = () => {
+            isAgentSpeaking = false;
+            voiceStatus.innerText = "Click the Microphone to speak a command.";
+        };
+        
         window.speechSynthesis.speak(utterance);
+    } else {
+        isAgentSpeaking = false;
+        voiceStatus.innerText = "Click the Microphone to speak a command.";
     }
 }
+
 
 // Checkout active bill
 async function checkoutCart() {
@@ -452,9 +553,16 @@ function setupEventListeners() {
 
     // Global spacebar hotkey (Toggles listening if no inputs are active)
     document.addEventListener('keydown', (e) => {
-        if (e.code === 'Space' && document.activeElement !== txtManualCommand && document.activeElement !== document.getElementById('custName')) {
-            e.preventDefault();
-            toggleListening();
+        if (e.code === 'Space') {
+            if (e.repeat) return; // Prevent rapid toggling if key is held down
+            
+            const activeTag = document.activeElement.tagName;
+            const isInput = activeTag === 'INPUT' || activeTag === 'TEXTAREA' || document.activeElement.isContentEditable;
+            
+            if (!isInput) {
+                e.preventDefault();
+                toggleListening();
+            }
         }
     });
 

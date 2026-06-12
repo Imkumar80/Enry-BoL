@@ -33,6 +33,9 @@ model_initialized = False
 sarvam_api_key = os.getenv("SARVAM_API_KEY")
 sarvam_model = os.getenv("SARVAM_MODEL", "sarvam-2b-v0.5")
 
+openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
+openrouter_parser_model = os.getenv("OPENROUTER_PARSER_MODEL", "qwen/qwen3-235b-a22b-instruct:free")
+
 if api_key:
     try:
         genai.configure(api_key=api_key)
@@ -279,9 +282,86 @@ def parse_with_regex(text: str) -> ParsedCommand:
         explanation=explanation
     )
 
+def parse_with_openrouter(text: str) -> ParsedCommand:
+    """Parses text using OpenRouter Chat Completions API with a Qwen/Llama model."""
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    
+    system_prompt = """You are the NLU parser for Enry, a Hinglish Voice OS layer for Indian shopkeepers (Kirana stores).
+Analyze the user's voice transcript and convert it to a structured JSON object.
+
+You MUST output ONLY valid JSON matching this exact schema:
+{
+  "intent": "Intent name, one of: add_inventory, remove_inventory, update_quantity, create_bill, add_to_bill, record_credit, record_payment, check_stock, check_credit, daily_summary, unknown",
+  "entities": {
+    "product": "Product name or null. Normalize to standard names like: 'Britannia Biscuit', 'Surf Excel', 'Chini', 'Amul Milk', 'Maggi Noodles'",
+    "quantity": "Quantity number or null (e.g. 1.0, 0.5)",
+    "unit": "Unit name or null (e.g. 'packet', 'kg', 'litre')",
+    "amount": "Rupee amount or null (e.g. 500.0)",
+    "customer": "Customer name or null"
+  },
+  "original_text": "The exact original transcript",
+  "explanation": "A short confirmation message in Hinglish/English confirming the action."
+}
+
+Rules:
+1. Identify intent: 'create_bill', 'add_to_bill', 'record_credit', 'record_payment', 'check_stock', 'check_credit', 'daily_summary', 'add_inventory', 'update_quantity'.
+2. Extract entities and normalize products.
+3. Provide a friendly explanation.
+4. Output ONLY JSON, with no markdown code blocks (no ```json).
+"""
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {openrouter_api_key}"
+    }
+    
+    payload = {
+        "model": openrouter_parser_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Transcript: \"{text}\""}
+        ],
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"}
+    }
+    
+    try:
+        req = urllib.request.Request(
+            url, 
+            data=json.dumps(payload).encode("utf-8"), 
+            headers=headers, 
+            method="POST"
+        )
+        
+        with urllib.request.urlopen(req, timeout=15) as response:
+            res_data = json.loads(response.read().decode("utf-8"))
+            content = res_data["choices"][0]["message"]["content"].strip()
+            
+            # Clean markdown formatting if present
+            if content.startswith("```"):
+                lines = content.splitlines()
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                content = "\n".join(lines).strip()
+                
+            return ParsedCommand.model_validate_json(content)
+            
+    except Exception as e:
+        print(f"OpenRouter API invocation failed: {e}. Falling back to other engines.")
+        if sarvam_api_key and "your_sarvam_key_here" not in sarvam_api_key:
+            return parse_with_sarvam(text)
+        elif model_initialized:
+            return parse_with_gemini(text)
+        else:
+            return parse_with_regex(text)
+
 def parse_command(text: str) -> ParsedCommand:
     """Main entrypoint for NLU parsing."""
-    if sarvam_api_key:
+    if openrouter_api_key and "your_openrouter_key_here" not in openrouter_api_key:
+        return parse_with_openrouter(text)
+    elif sarvam_api_key and "your_sarvam_key_here" not in sarvam_api_key:
         return parse_with_sarvam(text)
     elif model_initialized:
         return parse_with_gemini(text)

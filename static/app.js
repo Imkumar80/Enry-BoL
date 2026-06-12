@@ -11,6 +11,9 @@ let transactions = [];
 let recognition = null;
 let isListening = false;
 
+// Voice Agent WebSocket
+let voiceSocket = null;
+
 // DOM Elements
 const btnMic = document.getElementById('btnMic');
 const micIcon = document.getElementById('micIcon');
@@ -47,6 +50,7 @@ const formAddCustomer = document.getElementById('formAddCustomer');
 document.addEventListener('DOMContentLoaded', () => {
     fetchData();
     initSpeechRecognition();
+    initVoiceAgentSocket();
     setupEventListeners();
     addLogItem('System initialized and ready.', 'system');
 });
@@ -217,7 +221,26 @@ function initSpeechRecognition() {
     recognition.onresult = (event) => {
         const resultText = event.results[0][0].transcript;
         liveTranscript.innerText = `"${resultText}"`;
-        submitCommand(resultText);
+        
+        if (voiceSocket && voiceSocket.readyState === WebSocket.OPEN) {
+            addLogItem(`You: "${resultText}"`, 'system');
+            
+            // Stream the user turn state and transcript
+            voiceSocket.send(JSON.stringify({
+                type: "user_state",
+                value: "speaking"
+            }));
+            voiceSocket.send(JSON.stringify({
+                type: "message",
+                content: resultText
+            }));
+            voiceSocket.send(JSON.stringify({
+                type: "user_state",
+                value: "idle"
+            }));
+        } else {
+            submitCommand(resultText);
+        }
     };
 
     recognition.onerror = (event) => {
@@ -445,7 +468,7 @@ function setupEventListeners() {
     btnSendCommand.addEventListener('click', () => {
         const text = txtManualCommand.value;
         if (text.trim()) {
-            submitCommand(text);
+            sendTextCommand(text);
             txtManualCommand.value = '';
         }
     });
@@ -454,7 +477,7 @@ function setupEventListeners() {
         if (e.key === 'Enter') {
             const text = txtManualCommand.value;
             if (text.trim()) {
-                submitCommand(text);
+                sendTextCommand(text);
                 txtManualCommand.value = '';
             }
         }
@@ -492,4 +515,151 @@ function setupEventListeners() {
             alert("Error: Customer already exists or invalid input details.");
         }
     });
+}
+
+// --- VOICE AGENT WEBSOCKET HANDLERS ---
+
+function initVoiceAgentSocket() {
+    const wsUrl = `ws://${window.location.hostname}:8001/ws`;
+    console.log(`Connecting to Voice Agent WebSocket: ${wsUrl}`);
+    
+    voiceSocket = new WebSocket(wsUrl);
+    
+    voiceSocket.onopen = () => {
+        console.log("Connected to Voice Agent WebSocket.");
+        addLogItem("Connected to voice agent server.", "system");
+        
+        // Send start message
+        voiceSocket.send(JSON.stringify({
+            type: "start",
+            call_id: "enry-session-" + Date.now(),
+            from: "user",
+            to: "agent",
+            agent_call_id: "agent-session-" + Date.now(),
+            agent: {
+                id: "enry_agent"
+            }
+        }));
+    };
+    
+    voiceSocket.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            console.log("WebSocket message received:", data);
+            
+            if (data.type === "message") {
+                if (data.content && data.content.trim()) {
+                    liveTranscript.innerText = `"${data.content}"`;
+                    speak(data.content);
+                    addLogItem(`Enry: ${data.content}`, "success");
+                }
+            } 
+            else if (data.type === "tool_call") {
+                if (data.name === "execute_ledger_command" && data.result) {
+                    handleLedgerToolResult(data.result);
+                }
+            } 
+            else if (data.type === "error") {
+                console.error("Voice Agent error:", data.content);
+                addLogItem(`Agent Error: ${data.content}`, "error");
+            }
+        } catch (e) {
+            console.error("Error parsing WebSocket message:", e);
+        }
+    };
+    
+    voiceSocket.onclose = (event) => {
+        console.warn("Voice Agent WebSocket disconnected. Reconnecting in 3 seconds...", event.reason);
+        addLogItem("Voice agent server disconnected. Retrying...", "error");
+        setTimeout(initVoiceAgentSocket, 3000);
+    };
+    
+    voiceSocket.onerror = (error) => {
+        console.error("Voice Agent WebSocket error:", error);
+    };
+}
+
+function handleLedgerToolResult(resultString) {
+    try {
+        const result = JSON.parse(resultString);
+        console.log("Parsed ledger tool result:", result);
+        
+        if (result.success) {
+            addLogItem(result.message, "success");
+        } else {
+            addLogItem(result.message, "error");
+        }
+        
+        if (result.success) {
+            if (result.intent === "add_to_bill" && result.product_details) {
+                const details = result.product_details;
+                // Add to client-side cart
+                const existingItemIndex = cart.findIndex(item => item.name === details.name);
+                if (existingItemIndex > -1) {
+                    cart[existingItemIndex].quantity += details.quantity;
+                    cart[existingItemIndex].total = cart[existingItemIndex].quantity * cart[existingItemIndex].price;
+                } else {
+                    cart.push({
+                        name: details.name,
+                        price: details.price,
+                        quantity: details.quantity,
+                        unit: details.unit,
+                        total: details.total
+                    });
+                }
+                renderCart();
+            } 
+            else if (result.intent === "create_bill") {
+                const customerName = result.customer;
+                if (customerName) {
+                    const found = customers.find(c => c.name.toLowerCase() === customerName.toLowerCase());
+                    if (found) {
+                        selectCustomer(found);
+                    } else {
+                        activeCustomerName.innerText = customerName;
+                        activeCustomer = { name: customerName, id: null };
+                    }
+                } else {
+                    selectCustomer(null);
+                }
+            }
+            else if (result.intent === "record_credit" || result.intent === "record_payment") {
+                const customerName = result.customer;
+                if (customerName) {
+                    const found = customers.find(c => c.name.toLowerCase() === customerName.toLowerCase());
+                    if (found) {
+                        selectCustomer(found);
+                    }
+                }
+            }
+            
+            // Refresh dashboard DB statistics
+            fetchData();
+        }
+    } catch (e) {
+        console.warn("Ledger result is not JSON:", resultString);
+        addLogItem(resultString, "system");
+        speak(resultString);
+    }
+}
+
+function sendTextCommand(text) {
+    if (voiceSocket && voiceSocket.readyState === WebSocket.OPEN) {
+        addLogItem(`You (Text): "${text}"`, 'system');
+        
+        voiceSocket.send(JSON.stringify({
+            type: "user_state",
+            value: "speaking"
+        }));
+        voiceSocket.send(JSON.stringify({
+            type: "message",
+            content: text
+        }));
+        voiceSocket.send(JSON.stringify({
+            type: "user_state",
+            value: "idle"
+        }));
+    } else {
+        submitCommand(text);
+    }
 }

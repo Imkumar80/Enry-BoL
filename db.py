@@ -2,7 +2,7 @@ import sqlite3
 import os
 from contextlib import closing
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "bolna.db")
+DB_PATH = os.path.join(os.path.dirname(__file__), "enry.db")
 
 def get_db_connection():
     """Returns a connection to the SQLite database."""

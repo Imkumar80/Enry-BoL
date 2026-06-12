@@ -2,7 +2,7 @@
 
 > Behavioral guidelines + domain expertise for building a context-aware Voice OS that lets Indian shopkeepers interact with billing, inventory, and ledger apps entirely through Hinglish voice commands.
 
-**Project Codename:** BOLNA (बोलना — "to speak")
+**Project Codename:** Enry (एनरी)
 **Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
 ---
@@ -266,14 +266,14 @@ Frontend:
   - Functions: `snake_case`
   - Constants: `UPPER_SNAKE_CASE`
   - Intents: `lower_snake_case` (e.g., `add_inventory`)
-- **Error handling:** Use custom exception hierarchy rooted at `BolnaError`
+- **Error handling:** Use custom exception hierarchy rooted at `EnryError`
 - **Logging:** Use `structlog` for structured JSON logging
 - **Config:** Use `pydantic-settings` for environment/config management
 
 ### Project Structure
 
 ```
-bolna-voice-os/
+enry-voice-os/
 ├── src/
 │   ├── audio/              # Audio capture, VAD, preprocessing
 │   │   ├── capture.py      # Mic input + hotkey listener

@@ -11,7 +11,7 @@ import db
 import parser
 
 app = FastAPI(
-    title="BOLNA Voice OS API",
+    title="Enry Voice OS API",
     description="Backend API for the voice-enabled digital Khata ledger, POS, and inventory system.",
     version="1.0.0"
 )

@@ -1,4 +1,4 @@
-// BOLNA Web Dashboard Client App Logic
+// Enry Web Dashboard Client App Logic
 
 // App State
 let activeCustomer = null;

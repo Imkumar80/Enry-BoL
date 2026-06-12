@@ -1,6 +1,8 @@
 import os
 import re
 import json
+import urllib.request
+import urllib.error
 from pydantic import BaseModel, Field
 from typing import Optional
 from dotenv import load_dotenv
@@ -28,6 +30,9 @@ class ParsedCommand(BaseModel):
 api_key = os.getenv("GEMINI_API_KEY")
 model_initialized = False
 
+sarvam_api_key = os.getenv("SARVAM_API_KEY")
+sarvam_model = os.getenv("SARVAM_MODEL", "sarvam-2b-v0.5")
+
 if api_key:
     try:
         genai.configure(api_key=api_key)
@@ -41,7 +46,7 @@ if api_key:
 def parse_with_gemini(text: str) -> ParsedCommand:
     """Parses text using Gemini structured output."""
     prompt = f"""
-    You are the NLU parser for BOLNA, a Hinglish Voice OS layer for Indian shopkeepers (Kirana stores).
+    You are the NLU parser for Enry, a Hinglish Voice OS layer for Indian shopkeepers (Kirana stores).
     Your task is to analyze the user's voice transcript and convert it to the requested JSON schema.
     
     Transcript: "{text}"
@@ -79,6 +84,75 @@ def parse_with_gemini(text: str) -> ParsedCommand:
         return ParsedCommand.model_validate_json(response.text)
     except Exception as e:
         print(f"Gemini API invocation failed: {e}. Falling back to Regex parser.")
+        return parse_with_regex(text)
+
+def parse_with_sarvam(text: str) -> ParsedCommand:
+    """Parses text using Sarvam AI Chat completions API."""
+    url = "https://api.sarvam.ai/v1/chat/completions"
+    
+    system_prompt = """You are the NLU parser for Enry, a Hinglish Voice OS layer for Indian shopkeepers (Kirana stores).
+Analyze the user's voice transcript and convert it to a structured JSON object.
+
+You MUST output ONLY valid JSON matching this exact schema:
+{
+  "intent": "Intent name, one of: add_inventory, remove_inventory, update_quantity, create_bill, add_to_bill, record_credit, record_payment, check_stock, check_credit, daily_summary, unknown",
+  "entities": {
+    "product": "Product name or null. Normalize to standard names like: 'Britannia Biscuit', 'Surf Excel', 'Chini', 'Amul Milk', 'Maggi Noodles'",
+    "quantity": "Quantity number or null (e.g. 1.0, 0.5)",
+    "unit": "Unit name or null (e.g. 'packet', 'kg', 'litre')",
+    "amount": "Rupee amount or null (e.g. 500.0)",
+    "customer": "Customer name or null"
+  },
+  "original_text": "The exact original transcript",
+  "explanation": "A short confirmation message in Hinglish/English confirming the action."
+}
+
+Rules:
+1. Identify intent: 'create_bill', 'add_to_bill', 'record_credit', 'record_payment', 'check_stock', 'check_credit', 'daily_summary', 'add_inventory', 'update_quantity'.
+2. Extract entities and normalize products.
+3. Provide a friendly explanation.
+4. Output ONLY JSON, with no markdown code blocks (no ```json).
+"""
+
+    headers = {
+        "Content-Type": "application/json",
+        "api-subscription-key": sarvam_api_key
+    }
+    
+    payload = {
+        "model": sarvam_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Transcript: \"{text}\""}
+        ],
+        "temperature": 0.1
+    }
+    
+    try:
+        req = urllib.request.Request(
+            url, 
+            data=json.dumps(payload).encode("utf-8"), 
+            headers=headers, 
+            method="POST"
+        )
+        
+        with urllib.request.urlopen(req, timeout=10) as response:
+            res_data = json.loads(response.read().decode("utf-8"))
+            content = res_data["choices"][0]["message"]["content"].strip()
+            
+            # Clean markdown formatting if present
+            if content.startswith("```"):
+                lines = content.splitlines()
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                content = "\n".join(lines).strip()
+                
+            return ParsedCommand.model_validate_json(content)
+            
+    except Exception as e:
+        print(f"Sarvam API invocation failed: {e}. Falling back to Regex parser.")
         return parse_with_regex(text)
 
 def parse_with_regex(text: str) -> ParsedCommand:
@@ -207,7 +281,9 @@ def parse_with_regex(text: str) -> ParsedCommand:
 
 def parse_command(text: str) -> ParsedCommand:
     """Main entrypoint for NLU parsing."""
-    if model_initialized:
+    if sarvam_api_key:
+        return parse_with_sarvam(text)
+    elif model_initialized:
         return parse_with_gemini(text)
     else:
         return parse_with_regex(text)

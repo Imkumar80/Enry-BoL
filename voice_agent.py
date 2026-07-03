@@ -1,6 +1,6 @@
 import os
 import json
-import asyncio
+
 from datetime import datetime
 from typing import Annotated
 # pyrefly: ignore [missing-import]
@@ -11,7 +11,7 @@ from line.llm_agent import LlmAgent, LlmConfig, loopback_tool, end_call
 from line.voice_agent_app import VoiceAgentApp
 
 import db
-import parser
+import nlu_parser
 
 load_dotenv()
 
@@ -24,7 +24,7 @@ os.environ["OPENROUTER_API_KEY"] = os.getenv("OPENROUTER_API_KEY", "")
 @loopback_tool
 async def execute_ledger_command(ctx, command: Annotated[str, "The complete user spoken sentence to parse and execute ledger, billing, stock, or credit operations"]):
     """Execute ledger actions (record credit, record payment, check stock, check credit, add to bill, create bill, daily summary) by calling the second NLU parser LLM agent."""
-    parsed = parser.parse_command(command)
+    parsed = nlu_parser.parse_command(command)
     intent = parsed.intent
     entities = parsed.entities
     explanation = parsed.explanation
@@ -88,7 +88,17 @@ async def execute_ledger_command(ctx, command: Annotated[str, "The complete user
                 return f"Error: Product name is missing. {explanation}"
             item = db.get_inventory_item_by_name(entities.product, conn)
             if not item:
-                return f"Error: Product '{entities.product}' not found in catalog."
+                # Auto-create the new product to allow arbitrary items!
+                unit = entities.unit if entities.unit else "item"
+                cursor = conn.cursor()
+                cursor.execute("INSERT INTO inventory (name, price, stock, unit) VALUES (?, ?, ?, ?)", (entities.product, 0.0, 100.0, unit))
+                item = {
+                    "id": cursor.lastrowid,
+                    "name": entities.product,
+                    "price": 0.0,
+                    "stock": 100.0,
+                    "unit": unit
+                }
             qty = entities.quantity or 1.0
             result_data = {
                 "intent": "add_to_bill",
@@ -154,12 +164,13 @@ async def get_agent(env, call_request):
         "When the user wants to record a credit (udhaar), receive a payment, check stock, add items to a bill/cart, "
         "create a bill, or check the daily summary, you MUST invoke the `execute_ledger_command` tool. "
         "Pass the user's complete spoken instruction exactly as the `command` argument to the tool. "
-        "After the tool returns, summarize the result or speak the tool's confirmation message to the user."
+        "After the tool returns, summarize the result or speak the tool's confirmation message to the user.\n"
+        "IMPORTANT: When the user says goodbye, asks you to stop, or ends the conversation, you MUST invoke the `end_call` tool to end the conversation.\n"
         '<emotion value="enthusiastic"/>' # SSML-like emotion guidance for Sonic
     )
     
     return LlmAgent(
-        model="openrouter/qwen/qwen3-coder:free",
+        model="openrouter/qwen/qwen-2.5-coder-32b-instruct:free",
         api_key=os.getenv("OPENROUTER_API_KEY"),
         tools=[execute_ledger_command, end_call],
         config=LlmConfig(

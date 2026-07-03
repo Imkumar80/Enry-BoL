@@ -53,8 +53,8 @@ const formAddCustomer = document.getElementById('formAddCustomer');
 // Initial Setup
 document.addEventListener('DOMContentLoaded', () => {
     fetchData();
+    setInterval(fetchData, 3000); // Live polling to automatically refresh the ledger!
     initSpeechRecognition();
-    initVoiceAgentSocket();
     setupEventListeners();
     addLogItem('System initialized and ready.', 'system');
 });
@@ -196,143 +196,131 @@ function removeCartItem(index) {
 }
 
 // --- VOICE OS OPERATIONS ---
+let wakeWordListener = null;
+let isAwake = false;
 
 function initSpeechRecognition() {
-    // Check for microphone support
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        voiceStatus.innerText = "Microphone access not supported. Use manual input.";
+    if (!('webkitSpeechRecognition' in window)) {
+        voiceStatus.innerText = "Speech recognition not supported in this browser. Please use Chrome.";
         btnMic.disabled = true;
         return;
     }
-    voiceStatus.innerText = "Click the Microphone to speak a command.";
-}
-
-async function startRecording() {
-    try {
-        // Request microphone access
-        micStream = await navigator.mediaDevices.getUserMedia({ 
-            audio: { 
-                sampleRate: 16000, 
-                channelCount: 1, 
-                echoCancellation: true,
-                noiseSuppression: true 
-            } 
-        });
-        
-        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-        const source = audioContext.createMediaStreamSource(micStream);
-        
-        // ScriptProcessorNode to capture raw PCM
-        scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
-        audioChunks = [];
-        
-        scriptProcessor.onaudioprocess = (e) => {
-            if (!isListening) return;
-            const float32 = e.inputBuffer.getChannelData(0);
-            // Convert Float32 to Int16 PCM
-            const int16 = new Int16Array(float32.length);
-            for (let i = 0; i < float32.length; i++) {
-                const s = Math.max(-1, Math.min(1, float32[i]));
-                int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-            }
-            audioChunks.push(int16);
-        };
-        
-        source.connect(scriptProcessor);
-        scriptProcessor.connect(audioContext.destination);
-        
+    
+    wakeWordListener = new webkitSpeechRecognition();
+    wakeWordListener.continuous = true;
+    wakeWordListener.interimResults = true;
+    wakeWordListener.lang = 'hi-IN'; // Works for Hinglish/Hindi/English
+    
+    wakeWordListener.onstart = () => {
         isListening = true;
-        btnMic.classList.add('listening');
-        micIcon.innerText = 'mic_none';
-        voiceStatus.innerText = "🎤 Listening... Click mic again when done.";
-        liveTranscript.classList.remove('placeholder-text');
-        liveTranscript.innerText = "Listening...";
+        if (!isAwake) {
+            voiceStatus.innerText = "Listening for wake word (Say 'Hey Enry')...";
+            btnMic.classList.add('listening');
+            micIcon.innerText = 'mic_none';
+        }
+    };
+    
+    wakeWordListener.onresult = (event) => {
+        if (isAgentSpeaking) return; // Ignore input while agent speaks
         
-    } catch (err) {
-        console.error("Microphone access denied:", err);
-        voiceStatus.innerText = "Microphone access denied. Please allow mic permissions.";
+        let interimTranscript = '';
+        let finalTranscript = '';
+        
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+            if (event.results[i].isFinal) {
+                finalTranscript += event.results[i][0].transcript;
+            } else {
+                interimTranscript += event.results[i][0].transcript;
+            }
+        }
+        
+        const transcript = (finalTranscript || interimTranscript).toLowerCase();
+        
+        if (!isAwake) {
+            // Wake word logic
+            if (transcript.includes('hey enry') || transcript.includes('enry')) {
+                wakeUpAgent();
+            } else if (interimTranscript) {
+                liveTranscript.innerText = `[Sleeping] Heard: ${interimTranscript}`;
+            }
+        } else {
+            // Forward command if awake and final
+            liveTranscript.innerText = `"${transcript}"`;
+            if (finalTranscript) {
+                sendTextCommand(finalTranscript);
+            }
+        }
+    };
+    
+    wakeWordListener.onerror = (event) => {
+        console.error("Speech recognition error:", event.error);
+        if (event.error === 'not-allowed') {
+            voiceStatus.innerText = "Microphone access denied.";
+            btnMic.classList.remove('listening');
+            micIcon.innerText = 'mic_off';
+        }
+    };
+    
+    wakeWordListener.onend = () => {
+        isListening = false;
+        // Auto-restart if we are supposed to be listening (except when agent is speaking)
+        if (!isAgentSpeaking) {
+            try {
+                wakeWordListener.start();
+            } catch(e) {}
+        }
+    };
+    
+    // Start listening right away
+    try {
+        wakeWordListener.start();
+    } catch(e) {}
+}
+
+function wakeUpAgent() {
+    if (isAwake) return;
+    isAwake = true;
+    addLogItem("Wake word detected. Agent awake.", "success");
+    voiceStatus.innerText = "Agent awake. Go ahead...";
+    liveTranscript.innerText = "Ready for command...";
+    micIcon.innerText = 'mic';
+    btnMic.classList.add('listening');
+    speak("Namaste, bataiye?");
+    
+    if (!voiceSocket || voiceSocket.readyState !== WebSocket.OPEN) {
+        initVoiceAgentSocket();
     }
 }
 
-async function stopRecordingAndTranscribe() {
-    isListening = false;
-    btnMic.classList.remove('listening');
-    micIcon.innerText = 'mic';
-    voiceStatus.innerText = "Transcribing...";
-    liveTranscript.innerText = "Processing audio...";
+function sleepAgent() {
+    isAwake = false;
+    addLogItem("Agent returning to sleep mode.", "system");
+    voiceStatus.innerText = "Listening for wake word (Say 'Hey Enry')...";
+    micIcon.innerText = 'mic_none';
     
-    // Stop the mic stream
-    if (scriptProcessor) { scriptProcessor.disconnect(); scriptProcessor = null; }
-    if (audioContext) { audioContext.close(); audioContext = null; }
-    if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
-    
-    // Concatenate all PCM chunks into one buffer
-    if (audioChunks.length === 0) {
-        voiceStatus.innerText = "No audio captured. Try again.";
-        return;
-    }
-    
-    const totalLength = audioChunks.reduce((acc, chunk) => acc + chunk.length, 0);
-    const combined = new Int16Array(totalLength);
-    let offset = 0;
-    for (const chunk of audioChunks) {
-        combined.set(chunk, offset);
-        offset += chunk.length;
-    }
-    audioChunks = [];
-    
-    // Send to backend /api/stt
-    const blob = new Blob([combined.buffer], { type: 'application/octet-stream' });
-    const formData = new FormData();
-    formData.append('audio', blob, 'recording.pcm');
-    
-    try {
-        const response = await fetch('/api/stt', { method: 'POST', body: formData });
-        const result = await response.json();
-        
-        if (result.success && result.text) {
-            const resultText = result.text.trim();
-            liveTranscript.innerText = `"${resultText}"`;
-            addLogItem(`You: "${resultText}"`, 'system');
-            
-            // Send to voice agent or command parser
-            if (voiceSocket && voiceSocket.readyState === WebSocket.OPEN) {
-                voiceSocket.send(JSON.stringify({ type: "user_state", value: "speaking" }));
-                voiceSocket.send(JSON.stringify({ type: "message", content: resultText }));
-                voiceSocket.send(JSON.stringify({ type: "user_state", value: "idle" }));
-            } else {
-                submitCommand(resultText);
-            }
-            voiceStatus.innerText = "Command sent! Click mic to speak again.";
-        } else {
-            liveTranscript.innerText = result.error || "Could not understand. Try again.";
-            voiceStatus.innerText = "Could not understand. Click mic to try again.";
-        }
-    } catch (err) {
-        console.error("STT request failed:", err);
-        voiceStatus.innerText = "STT error. Check backend connection.";
-        liveTranscript.innerText = "Server error during transcription.";
+    if (voiceSocket) {
+        voiceSocket.close();
+        voiceSocket = null;
     }
 }
 
 function toggleListening() {
-    if (isAgentSpeaking) return; // Don't start mic while agent is speaking
-    if (isListening) {
-        stopRecordingAndTranscribe();
+    if (isAgentSpeaking) return;
+    if (isAwake) {
+        sleepAgent();
     } else {
-        startRecording();
+        wakeUpAgent();
     }
 }
 
 function stopListening() {
-    isListening = false;
-    if (scriptProcessor) { scriptProcessor.disconnect(); scriptProcessor = null; }
-    if (audioContext) { audioContext.close(); audioContext = null; }
-    if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
-    audioChunks = [];
+    sleepAgent();
+    if (wakeWordListener) {
+        wakeWordListener.stop();
+    }
     btnMic.classList.remove('listening');
-    micIcon.innerText = 'mic';
-    voiceStatus.innerText = "Microphone paused. Click to resume.";
+    micIcon.innerText = 'mic_off';
+    voiceStatus.innerText = "Microphone paused.";
 }
 
 // Submit spoken or typed command to FastAPI
@@ -472,13 +460,22 @@ function browserSpeakFallback(text) {
         
         utterance.onend = () => {
             isAgentSpeaking = false;
-            voiceStatus.innerText = "Click the Microphone to speak a command.";
+            if (isAwake) {
+                voiceStatus.innerText = "Agent awake. Go ahead...";
+            } else {
+                voiceStatus.innerText = "Listening for wake word (Say 'Hey Enry')...";
+            }
+            try { wakeWordListener.start(); } catch(e) {}
         };
         
         window.speechSynthesis.speak(utterance);
     } else {
         isAgentSpeaking = false;
-        voiceStatus.innerText = "Click the Microphone to speak a command.";
+        if (isAwake) {
+            voiceStatus.innerText = "Agent awake. Go ahead...";
+        } else {
+            voiceStatus.innerText = "Listening for wake word (Say 'Hey Enry')...";
+        }
     }
 }
 
@@ -662,6 +659,11 @@ function initVoiceAgentSocket() {
                     addLogItem(`Enry: ${data.content}`, "success");
                 }
             } 
+            else if (data.type === "end_call") {
+                addLogItem("Agent ended the call.", "system");
+                speak("Alvida!");
+                sleepAgent();
+            }
             else if (data.type === "tool_call") {
                 if (data.name === "execute_ledger_command" && data.result) {
                     handleLedgerToolResult(data.result);
@@ -677,9 +679,10 @@ function initVoiceAgentSocket() {
     };
     
     voiceSocket.onclose = (event) => {
+        if (!isAwake) return; // Do not automatically reconnect if sleeping
         console.warn("Voice Agent WebSocket disconnected. Reconnecting in 3 seconds...", event.reason);
         addLogItem("Voice agent server disconnected. Retrying...", "error");
-        setTimeout(initVoiceAgentSocket, 3000);
+        setTimeout(() => { if (isAwake) initVoiceAgentSocket(); }, 3000);
     };
     
     voiceSocket.onerror = (error) => {

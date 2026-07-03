@@ -8,7 +8,7 @@ from typing import List, Optional
 from datetime import datetime
 
 import db
-import parser
+import nlu_parser
 
 app = FastAPI(
     title="Enry Voice OS API",
@@ -233,7 +233,7 @@ def parse_and_execute_command(req: CommandRequest, conn=Depends(db.get_db)):
         raise HTTPException(status_code=400, detail="Transcript is empty.")
 
     # 1. Parse intent & entities
-    parsed = parser.parse_command(text)
+    parsed = nlu_parser.parse_command(text)
     intent = parsed.intent
     entities = parsed.entities
     

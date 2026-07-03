@@ -31,7 +31,7 @@ class ExtractedEntities(BaseModel):
 
 class ParsedCommand(BaseModel):
     intent:       str              = Field(description=(
-        "One of: create_bill | add_to_bill | record_credit | record_payment | "
+        "One of: create_bill | add_to_bill | checkout_bill | record_credit | record_payment | "
         "check_stock | check_credit | daily_summary | add_inventory | "
         "remove_inventory | update_quantity | unknown"
     ))
@@ -103,6 +103,7 @@ Parse the shopkeeper's spoken sentence into a JSON object — no markdown, no ex
 == VALID INTENTS ==
 - create_bill     → "Ramesh ka bill banao", "new bill for Suresh"
 - add_to_bill     → "do packet biscuit add karo", "bill mein doodh daal do"
+- checkout_bill   → "checkout karo", "bill complete karo", "bill done"
 - record_credit   → "Ramesh ko 500 udhaar likh do", "Pinky ka 200 udhaar"
 - record_payment  → "Suresh ne 200 diye", "Pinky ne 120 rs pay kiya", "jama karo"
 - check_stock     → "Maggi kitna bacha hai?", "surf excel ka stock check karo"
@@ -256,6 +257,8 @@ def _parse_with_regex(text: str, system_prompt: str) -> ParsedCommand:
         intent = "daily_summary"
     elif any(w in tl for w in ["aaya", "stock mein", "add kiya", "mila hai"]):
         intent = "add_inventory"; quantity = found_number or 0.0
+    elif any(w in tl for w in ["checkout", "complete karo", "bill done", "settle bill"]):
+        intent = "checkout_bill"
     elif any(w in tl for w in ["add", "karo", "daal do", "daal", "bill mein", "bill me"]):
         intent = "add_to_bill" if product else "unknown"
         quantity = found_number or 1.0
@@ -265,6 +268,7 @@ def _parse_with_regex(text: str, system_prompt: str) -> ParsedCommand:
 
     expl_map = {
         "add_to_bill":    f"Adding {quantity} {unit} of {product} to the bill.",
+        "checkout_bill":  "Checking out the current bill.",
         "record_credit":  f"Recording ₹{amount:.0f} udhaar for {customer}.",
         "record_payment": f"Recording ₹{amount:.0f} payment from {customer}.",
         "create_bill":    f"Creating new bill for {customer or 'walk-in customer'}.",

@@ -124,6 +124,14 @@ async def execute_ledger_command(ctx, command: Annotated[str, "The complete user
             }
             return json.dumps(result_data)
             
+        elif intent == "checkout_bill":
+            result_data = {
+                "intent": "checkout_bill",
+                "success": True,
+                "message": "Processing checkout."
+            }
+            return json.dumps(result_data)
+            
         elif intent == "daily_summary":
             today_date = datetime.now().strftime('%Y-%m-%d')
             sales = conn.execute("SELECT SUM(total_amount) as total FROM invoices WHERE date(timestamp) = ?", (today_date,)).fetchone()

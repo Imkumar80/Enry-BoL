@@ -743,6 +743,9 @@ function handleLedgerToolResult(resultString) {
                     }
                 }
             }
+            else if (result.intent === "checkout_bill") {
+                checkoutCart();
+            }
             
             // Refresh dashboard DB statistics
             fetchData();

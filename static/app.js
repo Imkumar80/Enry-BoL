@@ -269,7 +269,7 @@ async function initMicrophone() {
             const rms = Math.sqrt(energy / inputData.length);
 
             // If agent is speaking and user speaks loud enough, trigger barge-in
-            if (isAgentSpeaking && rms > 0.04) {
+            if (isAgentSpeaking && rms > 0.07) {
                 console.log("Client barge-in! RMS:", rms.toFixed(4));
                 stopTTSPlayback();
                 voiceSocket.send(JSON.stringify({ type: "interrupt" }));
@@ -302,7 +302,7 @@ async function initMicrophone() {
 // ============================================================================
 let ttsAudioContext = null;
 let ttsNextStartTime = 0;
-let ttsSampleRate = 44100;
+let ttsSampleRate = 24000;
 let ttsPlaybackSources = new Set();
 
 function ensureTTSContext() {
@@ -342,7 +342,7 @@ function playTTSChunk(base64Audio, generationId) {
     source.buffer = buffer;
     source.connect(ctx.destination);
 
-    const startAt = Math.max(ctx.currentTime + 0.015, ttsNextStartTime);
+    const startAt = Math.max(ctx.currentTime + 0.005, ttsNextStartTime);
     source.start(startAt);
     ttsNextStartTime = startAt + buffer.duration;
     ttsPlaybackSources.add(source);

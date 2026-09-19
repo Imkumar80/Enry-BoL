@@ -1,219 +1,179 @@
 """
-voice/asr.py — Streaming ASR Abstraction & Implementations
-============================================================
-Provides:
-  - StreamingASR          (abstract base)
-  - DeepgramStreamingASR  (cloud, primary)
-  - LocalWhisperASR       (local, fallback)
-
-Select via ASR_PROVIDER env var: "deepgram" | "local"
+voice/asr.py — streaming ASR abstraction.
 """
 
 import os
 import asyncio
-import base64
 import logging
-import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, Callable, Awaitable
 
 logger = logging.getLogger("asr")
 
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
 
 @dataclass
 class ASRPartial:
     text: str
+
 
 @dataclass
 class ASRFinal:
     text: str
 
 
-# ---------------------------------------------------------------------------
-# Abstract base
-# ---------------------------------------------------------------------------
-
 class StreamingASR(ABC):
-    """
-    Push-based streaming ASR.
-    Callers push audio chunks and receive partial/final transcripts via callback.
-    """
-
     @abstractmethod
     async def start(self, on_partial: Optional[Callable[[ASRPartial], Awaitable]] = None,
-                    on_final: Optional[Callable[[ASRFinal], Awaitable]] = None):
-        ...
-
+                    on_final: Optional[Callable[[ASRFinal], Awaitable]] = None): ...
     @abstractmethod
-    async def push_audio(self, pcm_data: bytes):
-        ...
-
+    async def push_audio(self, pcm_data: bytes): ...
     @abstractmethod
-    async def finish(self) -> Optional[ASRFinal]:
-        ...
-
+    async def finish(self) -> Optional[ASRFinal]: ...
     @abstractmethod
-    async def cancel(self):
-        ...
+    async def cancel(self): ...
 
-
-# ---------------------------------------------------------------------------
-# Deepgram Streaming ASR
-# ---------------------------------------------------------------------------
 
 class DeepgramStreamingASR(StreamingASR):
-    """
-    Uses Deepgram's live streaming WebSocket API for real-time transcription.
-    Supports Kannada (kn), Hindi (hi), English (en) via multi-language or
-    the nova-2 model with language detection.
-    """
+    """Deepgram realtime ASR. Language/model are fully environment-configurable."""
 
     def __init__(self):
         self._api_key = os.getenv("DEEPGRAM_API_KEY", "")
         self._connection = None
-        self._on_partial: Optional[Callable] = None
-        self._on_final: Optional[Callable] = None
+        self._on_partial = None
+        self._on_final = None
         self._is_running = False
         self._accumulated_text = ""
-        self._client = None
         self._final_received = asyncio.Event()
+        self._last_final: Optional[ASRFinal] = None
 
     async def start(self, on_partial=None, on_final=None):
         if not self._api_key:
             raise EnvironmentError("DEEPGRAM_API_KEY not set")
 
+        from deepgram import DeepgramClient, LiveTranscriptionEvents, LiveOptions
+
         self._on_partial = on_partial
         self._on_final = on_final
         self._is_running = True
         self._accumulated_text = ""
+        self._last_final = None
         self._final_received = asyncio.Event()
 
-        try:
-            from deepgram import DeepgramClient, LiveTranscriptionEvents, LiveOptions
+        self._client = DeepgramClient(self._api_key)
+        self._connection = self._client.listen.asyncwebsocket.v("1")
 
-            self._client = DeepgramClient(self._api_key)
-            self._connection = self._client.listen.asyncwebsocket.v("1")
+        async def on_message(conn, result, **kwargs):
+            try:
+                alt = result.channel.alternatives[0]
+                transcript = (alt.transcript or "").strip()
+                if not transcript:
+                    return
 
-            # Wire up event handlers
-            async def on_message(conn, result, **kwargs):
-                try:
-                    alt = result.channel.alternatives[0]
-                    transcript = alt.transcript
-                    if not transcript:
-                        return
+                if result.is_final:
+                    # Deepgram's final transcript is a segment/delta. Append it
+                    # once; don't treat every interim result as a new segment.
+                    self._accumulated_text = (
+                        f"{self._accumulated_text} {transcript}".strip()
+                    )
+                    self._last_final = ASRFinal(self._accumulated_text)
+                    self._final_received.set()
+                    if self._on_final:
+                        await self._on_final(self._last_final)
+                elif self._on_partial:
+                    partial = f"{self._accumulated_text} {transcript}".strip()
+                    await self._on_partial(ASRPartial(partial))
+            except Exception:
+                logger.exception("Deepgram transcript callback failed")
 
-                    is_final = result.is_final
+        async def on_error(conn, error, **kwargs):
+            logger.error("Deepgram error: %s", error)
 
-                    if is_final:
-                        self._accumulated_text += (" " + transcript if self._accumulated_text else transcript)
-                        if self._on_final:
-                            await self._on_final(ASRFinal(text=self._accumulated_text.strip()))
-                    else:
-                        partial_text = (self._accumulated_text + " " + transcript).strip()
-                        if self._on_partial:
-                            await self._on_partial(ASRPartial(text=partial_text))
-                except Exception as e:
-                    logger.error(f"Deepgram message handler error: {e}")
+        self._connection.on(LiveTranscriptionEvents.Transcript, on_message)
+        self._connection.on(LiveTranscriptionEvents.Error, on_error)
 
-            async def on_error(conn, error, **kwargs):
-                logger.error(f"Deepgram error: {error}")
+        model = os.getenv("DEEPGRAM_MODEL", "nova-3")
+        language = os.getenv("DEEPGRAM_LANGUAGE", "multi")
+        options = LiveOptions(
+            model=model,
+            language=language,
+            encoding="linear16",
+            sample_rate=16000,
+            channels=1,
+            interim_results=True,
+            utterance_end_ms=os.getenv("DEEPGRAM_UTTERANCE_END_MS", "700"),
+            vad_events=False,
+            smart_format=True,
+        )
 
-            self._connection.on(LiveTranscriptionEvents.Transcript, on_message)
-            self._connection.on(LiveTranscriptionEvents.Error, on_error)
-
-            options = LiveOptions(
-                model="nova-3",
-                language="hi",           # Hindi primary, handles code-mixed
-                encoding="linear16",
-                sample_rate=16000,
-                channels=1,
-                interim_results=True,
-                utterance_end_ms="1000",
-                vad_events=False,
-                smart_format=True,
-            )
-
-            if not await self._connection.start(options):
-                raise RuntimeError("Failed to start Deepgram connection")
-
-            logger.info("Deepgram ASR started")
-        except Exception as e:
-            logger.error(f"Deepgram ASR start failed: {e}")
+        if not await self._connection.start(options):
+            self._connection = None
             self._is_running = False
-            raise
+            raise RuntimeError("Failed to start Deepgram connection")
+
+        logger.info("Deepgram started: model=%s language=%s", model, language)
 
     async def push_audio(self, pcm_data: bytes):
-        if not self._is_running or not self._connection:
-            return
-        try:
+        if self._is_running and self._connection:
             await self._connection.send(pcm_data)
-        except Exception as e:
-            logger.error(f"Deepgram send error: {e}")
 
     async def finish(self) -> Optional[ASRFinal]:
         if not self._is_running or not self._connection:
-            return ASRFinal(text=self._accumulated_text.strip()) if self._accumulated_text else None
+            return self._last_final or (
+                ASRFinal(self._accumulated_text) if self._accumulated_text else None
+            )
+
         self._is_running = False
+        connection = self._connection
         try:
-            await self._connection.finish()
-            logger.info("Deepgram ASR finished")
-        except Exception as e:
-            logger.error(f"Deepgram finish error: {e}")
-        self._connection = None
-        return ASRFinal(text=self._accumulated_text.strip()) if self._accumulated_text else None
+            await connection.finish()
+            # Give the SDK callback a short window to deliver the final segment.
+            try:
+                await asyncio.wait_for(self._final_received.wait(), timeout=0.35)
+            except asyncio.TimeoutError:
+                pass
+        except Exception:
+            logger.exception("Deepgram finish failed")
+        finally:
+            self._connection = None
+
+        return self._last_final or (
+            ASRFinal(self._accumulated_text) if self._accumulated_text else None
+        )
 
     async def cancel(self):
         self._is_running = False
-        if self._connection:
+        connection, self._connection = self._connection, None
+        if connection:
             try:
-                await self._connection.finish()
+                await connection.finish()
             except Exception:
                 pass
-            self._connection = None
         self._accumulated_text = ""
-        logger.info("Deepgram ASR cancelled")
+        self._last_final = None
 
-
-# ---------------------------------------------------------------------------
-# Local Whisper ASR (fallback)
-# ---------------------------------------------------------------------------
 
 class LocalWhisperASR(StreamingASR):
-    """
-    Offline ASR using faster-whisper.
-    Accumulates audio until finish() is called, then transcribes.
-    Partial transcripts are not available (batch mode).
-    """
+    """Batch fallback; intentionally not marketed as streaming."""
 
     def __init__(self):
         self._model = None
         self._audio_buffer = bytearray()
         self._is_running = False
-        self._on_partial = None
         self._on_final = None
 
     def _ensure_model(self):
-        if self._model is None:
-            try:
-                from faster_whisper import WhisperModel
-                model_size = os.getenv("WHISPER_MODEL_SIZE", "base")
-                self._model = WhisperModel(model_size, device="cpu", compute_type="int8")
-                logger.info(f"Loaded faster-whisper model: {model_size}")
-            except ImportError:
-                logger.error("faster-whisper not installed. Install with: pip install faster-whisper")
-                raise
+        from faster_whisper import WhisperModel
+        size = os.getenv("WHISPER_MODEL_SIZE", "base")
+        device = os.getenv("WHISPER_DEVICE", "cpu")
+        compute = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+        self._model = self._model or WhisperModel(size, device=device, compute_type=compute)
 
     async def start(self, on_partial=None, on_final=None):
         self._ensure_model()
         self._audio_buffer = bytearray()
         self._is_running = True
-        self._on_partial = on_partial
         self._on_final = on_final
-        logger.info("Local Whisper ASR started")
 
     async def push_audio(self, pcm_data: bytes):
         if self._is_running:
@@ -223,51 +183,32 @@ class LocalWhisperASR(StreamingASR):
         if not self._is_running:
             return None
         self._is_running = False
-
-        if len(self._audio_buffer) < 3200:  # Less than 0.1s of audio
+        if len(self._audio_buffer) < 3200:
             return None
-
+        import numpy as np
+        audio = np.frombuffer(bytes(self._audio_buffer), dtype=np.int16).astype(np.float32) / 32768.0
         try:
-            import numpy as np
-            # Convert PCM s16le to float32
-            audio_int16 = np.frombuffer(bytes(self._audio_buffer), dtype=np.int16)
-            audio_float = audio_int16.astype(np.float32) / 32768.0
-
-            segments, info = self._model.transcribe(
-                audio_float,
-                beam_size=3,
-                language="hi",
+            segments, _ = self._model.transcribe(
+                audio, beam_size=3,
+                language=os.getenv("WHISPER_LANGUAGE", "hi"),
                 vad_filter=True,
             )
             text = " ".join(seg.text for seg in segments).strip()
-            logger.info(f"Local Whisper result: '{text}'")
-
-            if text and self._on_final:
-                result = ASRFinal(text=text)
+            result = ASRFinal(text) if text else None
+            if result and self._on_final:
                 await self._on_final(result)
-                return result
-            return ASRFinal(text=text) if text else None
-        except Exception as e:
-            logger.error(f"Local Whisper transcription error: {e}")
+            return result
+        except Exception:
+            logger.exception("Local Whisper transcription failed")
             return None
 
     async def cancel(self):
         self._is_running = False
-        self._audio_buffer = bytearray()
-        logger.info("Local Whisper ASR cancelled")
+        self._audio_buffer.clear()
 
-
-# ---------------------------------------------------------------------------
-# Factory
-# ---------------------------------------------------------------------------
 
 def create_asr() -> StreamingASR:
-    """Create an ASR instance based on ASR_PROVIDER env var."""
     provider = os.getenv("ASR_PROVIDER", "deepgram").lower()
-    if provider == "deepgram":
-        return DeepgramStreamingASR()
-    elif provider == "local":
+    if provider == "local":
         return LocalWhisperASR()
-    else:
-        logger.warning(f"Unknown ASR_PROVIDER '{provider}', falling back to deepgram")
-        return DeepgramStreamingASR()
+    return DeepgramStreamingASR()

@@ -7,7 +7,7 @@ Model and URL are configured via environment variables.
 
 import os
 import logging
-from langchain_ollama import ChatOllama
+from langchain_google_genai import ChatGoogleGenerativeAI
 from agent.tools import TOOLS_LIST
 
 logger = logging.getLogger("agent.llm")
@@ -19,16 +19,18 @@ def get_llm():
     """Get or create the LLM instance with tools bound."""
     global _llm_instance
     if _llm_instance is None:
-        model_name = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
-        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        api_key = os.getenv("GEMINI_API_KEY")
+        model_name = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
-        logger.info(f"Initializing Ollama LLM: {model_name} at {base_url}")
+        if not api_key:
+            raise EnvironmentError("GEMINI_API_KEY is missing from environment")
 
-        llm = ChatOllama(
+        logger.info(f"Initializing Gemini LLM: {model_name}")
+
+        llm = ChatGoogleGenerativeAI(
             model=model_name,
-            base_url=base_url,
+            api_key=api_key,
             temperature=0.1,
-            num_predict=int(os.getenv("OLLAMA_NUM_PREDICT", "96")),
         )
 
         _llm_instance = llm.bind_tools(TOOLS_LIST)

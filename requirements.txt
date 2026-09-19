@@ -5,10 +5,11 @@ pydantic
 python-dotenv
 python-multipart
 
-# LangGraph + Ollama
+# LangGraph + LLMs
 langgraph
 langchain-ollama
 langchain-core
+langchain-google-genai
 
 # Voice Pipeline
 webrtcvad-wheels

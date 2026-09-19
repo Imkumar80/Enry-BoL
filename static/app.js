@@ -253,8 +253,10 @@ async function initMicrophone() {
 
         // Use ScriptProcessor for wide browser support (AudioWorklet ideal but complex)
         const scriptProcessor = audioContext.createScriptProcessor(2048, 1, 1);
+        const dummyDest = audioContext.createMediaStreamDestination();
+        
         source.connect(scriptProcessor);
-        scriptProcessor.connect(audioContext.destination);
+        scriptProcessor.connect(dummyDest);
 
         scriptProcessor.onaudioprocess = (e) => {
             if (!isAwake || !voiceSocket || voiceSocket.readyState !== WebSocket.OPEN) return;

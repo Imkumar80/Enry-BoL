@@ -12,7 +12,7 @@ langchain-core
 
 # Voice pipeline
 webrtcvad-wheels
-deepgram-sdk
+deepgram-sdk<4
 cartesia>=4.2,<5
 httpx
 

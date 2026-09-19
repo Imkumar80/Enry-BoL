@@ -40,31 +40,27 @@ class CartesiaTTS(TTSProvider):
         client = AsyncCartesia(api_key=self._api_key)
 
         try:
-            async with client.tts.websocket_connect() as ws:
-                ctx = ws.context(
-                    model_id=self._model_id,
-                    voice={"mode": "id", "id": self._voice_id},
-                    output_format={
-                        "container": "raw",
-                        "encoding": "pcm_s16le",
-                        "sample_rate": self._sample_rate,
-                    },
-                    language=self._language,
-                )
+            audio_stream = await client.tts.sse(
+                model_id=self._model_id,
+                transcript=text,
+                voice={"mode": "id", "id": self._voice_id},
+                output_format={
+                    "container": "raw",
+                    "encoding": "pcm_s16le",
+                    "sample_rate": self._sample_rate,
+                },
+                language=self._language,
+            )
 
-                await ctx.push(text)
-                await ctx.no_more_inputs()
-
-                async for response in ctx.receive():
-                    if generation_id in self._cancelled:
-                        return
-
-                    if response.type == "chunk" and response.audio:
-                        yield base64.b64encode(response.audio).decode("ascii")
-                    elif response.type == "error":
-                        raise RuntimeError(
-                            response.message or response.title or "Cartesia TTS error"
-                        )
+            async for chunk in audio_stream:
+                if generation_id in self._cancelled:
+                    return
+                if hasattr(chunk, 'audio') and chunk.audio:
+                    yield base64.b64encode(chunk.audio).decode("utf-8")
+                elif getattr(chunk, 'type', None) == "error":
+                    raise RuntimeError(
+                        getattr(chunk, 'message', None) or getattr(chunk, 'title', None) or "Cartesia TTS error"
+                    )
         except asyncio.CancelledError:
             raise
         finally:

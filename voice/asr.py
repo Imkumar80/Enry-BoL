@@ -67,6 +67,7 @@ class DeepgramStreamingASR(StreamingASR):
             try:
                 alt = result.channel.alternatives[0]
                 transcript = (alt.transcript or "").strip()
+                logger.info("Deepgram is_final=%s transcript='%s'", result.is_final, transcript)
                 if not transcript:
                     return
 
@@ -92,8 +93,8 @@ class DeepgramStreamingASR(StreamingASR):
         self._connection.on(LiveTranscriptionEvents.Transcript, on_message)
         self._connection.on(LiveTranscriptionEvents.Error, on_error)
 
-        model = os.getenv("DEEPGRAM_MODEL", "nova-3")
-        language = os.getenv("DEEPGRAM_LANGUAGE", "multi")
+        model = "nova-3"
+        language = "kn"
         options = LiveOptions(
             model=model,
             language=language,
@@ -101,9 +102,6 @@ class DeepgramStreamingASR(StreamingASR):
             sample_rate=16000,
             channels=1,
             interim_results=True,
-            utterance_end_ms=os.getenv("DEEPGRAM_UTTERANCE_END_MS", "700"),
-            vad_events=False,
-            smart_format=True,
         )
 
         if not await self._connection.start(options):
@@ -126,12 +124,12 @@ class DeepgramStreamingASR(StreamingASR):
         self._is_running = False
         connection = self._connection
         try:
-            await connection.finish()
-            # Give the SDK callback a short window to deliver the final segment.
+            # Wait for Deepgram to return the final result before sending CloseStream
             try:
-                await asyncio.wait_for(self._final_received.wait(), timeout=0.35)
+                await asyncio.wait_for(self._final_received.wait(), timeout=2.0)
             except asyncio.TimeoutError:
                 pass
+            await connection.finish()
         except Exception:
             logger.exception("Deepgram finish failed")
         finally:

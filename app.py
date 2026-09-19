@@ -14,6 +14,10 @@ from fastapi.responses import RedirectResponse
 import os
 import uvicorn
 import logging
+from dotenv import load_dotenv
+
+# Load environment variables from .env
+load_dotenv()
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime

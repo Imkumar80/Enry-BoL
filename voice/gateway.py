@@ -21,7 +21,7 @@ class VoiceGateway:
         self.ws = websocket
         self.session_id = str(uuid.uuid4())
         self.turn_manager = TurnManager(self._send_message, self.session_id)
-        self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=32)
+        self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=150)
         self._audio_worker_task = None
         self._closed = False
 
@@ -34,17 +34,22 @@ class VoiceGateway:
             logger.warning("[%s] Send failed: %s", self.session_id[:8], exc)
 
     async def _audio_worker(self):
-        try:
-            while not self._closed:
+        while not self._closed:
+            try:
                 pcm = await self._audio_queue.get()
                 try:
                     await self.turn_manager.on_audio(pcm)
+                except Exception as exc:
+                    logger.exception("[%s] Turn manager on_audio failed: %s", self.session_id[:8], exc)
+                    await self._send_message(ServerError(
+                        code="AUDIO_PROCESS_ERROR", message=f"Audio processing failed: {exc}"
+                    ).model_dump())
                 finally:
                     self._audio_queue.task_done()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("[%s] Audio worker failed", self.session_id[:8])
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("[%s] Audio worker iteration failed: %s", self.session_id[:8], exc)
 
     async def handle_connection(self):
         await self.ws.accept()
@@ -111,6 +116,6 @@ class VoiceGateway:
             logger.info("Voice session ended: %s", self.session_id[:8])
 
 
-@router.websocket("/ws/voice")
+@router.websocket("/ws/benchmark")
 async def voice_endpoint(websocket: WebSocket):
     await VoiceGateway(websocket).handle_connection()

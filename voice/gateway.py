@@ -54,6 +54,16 @@ class VoiceGateway:
     async def handle_connection(self):
         await self.ws.accept()
         self._audio_worker_task = asyncio.create_task(self._audio_worker())
+        # Warm the persistent ASR connection before the first utterance.
+        try:
+            if self.turn_manager.asr is None:
+                self.turn_manager.asr = __import__("voice.asr", fromlist=["create_asr"]).create_asr()
+                await self.turn_manager.asr.start(
+                    on_partial=self.turn_manager._on_asr_partial,
+                    on_final=self.turn_manager._on_asr_final,
+                )
+        except Exception:
+            logger.exception("[%s] Failed to warm ASR; it will retry on speech start", self.session_id[:8])
         logger.info("Voice session started: %s", self.session_id[:8])
 
         try:

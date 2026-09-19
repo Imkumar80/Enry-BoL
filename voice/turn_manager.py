@@ -105,12 +105,14 @@ class TurnManager:
         self._record("speech_start")
         self.state = TurnState.USER_SPEAKING
 
-        self.asr = create_asr()
-        try:
+        if self.asr is None:
+            self.asr = create_asr()
             await self.asr.start(
                 on_partial=self._on_asr_partial,
                 on_final=self._on_asr_final,
             )
+            else:
+                self.asr.begin_turn()
             await self.send(ServerVAD(event="speech_start").model_dump())
             logger.info("Turn %s: speech started", self.turn_id)
         except Exception as exc:
@@ -138,9 +140,8 @@ class TurnManager:
             return
 
         asr = self.asr
-        self.asr = None
         try:
-            result = await asr.finish() if asr else None
+            result = await asr.end_turn() if hasattr(asr, "end_turn") else (await asr.finish() if asr else None)
         except asyncio.CancelledError:
             raise
         except Exception:

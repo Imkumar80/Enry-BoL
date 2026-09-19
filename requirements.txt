@@ -22,3 +22,5 @@ google-generativeai
 # Optional batch local ASR fallback
 # faster-whisper
 # numpy
+
+pytest

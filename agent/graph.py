@@ -60,7 +60,8 @@ YOUR CAPABILITIES (use the corresponding tools):
 - record_credit: Record udhaar (credit) for a customer
 - record_payment: Record payment received from a customer
 - add_to_bill: Add items to the active cart/bill
-- create_bill: Start a new bill for a customer
+- create_bill: Start/reset a new bill for a customer
+- checkout_bill: Checkout the current bill; always ask for confirmation first
 - get_daily_summary: Get today's sales summary
 - add_inventory: Add stock to inventory
 - update_inventory: Set exact stock level
@@ -192,6 +193,8 @@ async def process_turn(transcript: str, conversation_messages: list,
             response_text = f"{tool_args.get('customer_name', 'Customer')} ke account mein ₹{tool_args.get('amount', 0):.0f} udhaar add kar doon? Haan ya nahi?"
         elif tool_name == "record_payment":
             response_text = f"{tool_args.get('customer_name', 'Customer')} se ₹{tool_args.get('amount', 0):.0f} payment record kar doon? Haan ya nahi?"
+        elif tool_name == "checkout_bill":
+            response_text = "Current bill checkout kar doon? Haan ya nahi?"
 
     # Keep only user and AI messages for conversation history (skip system)
     updated_history = [m for m in final_messages if not isinstance(m, SystemMessage)]

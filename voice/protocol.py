@@ -1,98 +1,117 @@
 """
-voice/protocol.py — WebSocket Protocol for Enry Voice Pipeline
-================================================================
-Defines all client→server and server→client message types.
-Every message has a `type` field. TTS messages carry a `generation_id`
-so stale audio can be discarded after barge-in.
+voice/protocol.py — WebSocket protocol for Enry Voice OS.
 """
 
+import base64
 import json
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 
-PROTOCOL_VERSION = "1.0"
+PROTOCOL_VERSION = "1.1"
 
-# ---------------------------------------------------------------------------
-# Client → Server
-# ---------------------------------------------------------------------------
 
 class ClientMessageType(str, Enum):
     AUDIO_CHUNK = "audio_chunk"
-    INTERRUPT   = "interrupt"
-    TURN_END    = "turn_end"
-    TEXT_INPUT   = "text_input"   # typed command from dashboard
+    INTERRUPT = "interrupt"
+    TURN_END = "turn_end"
+    TEXT_INPUT = "text_input"
 
 
 class ClientAudioChunk(BaseModel):
     type: str = ClientMessageType.AUDIO_CHUNK.value
-    sequence: int
+    sequence: int = Field(ge=0)
     sample_rate: int = 16000
     encoding: str = "pcm_s16le"
-    data: str  # base64-encoded PCM
+    data: str = Field(min_length=1)
+
+    @field_validator("sample_rate")
+    @classmethod
+    def validate_rate(cls, value):
+        if value != 16000:
+            raise ValueError("Only 16 kHz audio is supported")
+        return value
+
+    @field_validator("encoding")
+    @classmethod
+    def validate_encoding(cls, value):
+        if value != "pcm_s16le":
+            raise ValueError("Only pcm_s16le audio is supported")
+        return value
+
+    @field_validator("data")
+    @classmethod
+    def validate_base64_pcm(cls, value):
+        try:
+            raw = base64.b64decode(value, validate=True)
+        except Exception as exc:
+            raise ValueError("Invalid base64 audio") from exc
+        if not raw or len(raw) % 2:
+            raise ValueError("PCM payload must contain an even number of bytes")
+        # Prevent accidental multi-megabyte websocket frames.
+        if len(raw) > 128_000:
+            raise ValueError("Audio chunk is too large")
+        return value
+
 
 class ClientInterrupt(BaseModel):
     type: str = ClientMessageType.INTERRUPT.value
 
+
 class ClientTurnEnd(BaseModel):
     type: str = ClientMessageType.TURN_END.value
 
+
 class ClientTextInput(BaseModel):
     type: str = ClientMessageType.TEXT_INPUT.value
-    text: str
+    text: str = Field(min_length=1, max_length=4000)
 
-
-# ---------------------------------------------------------------------------
-# Server → Client
-# ---------------------------------------------------------------------------
 
 class ServerMessageType(str, Enum):
-    VAD          = "vad"
-    TRANSCRIPT   = "transcript"
-    AGENT_STATE  = "agent_state"
-    AGENT_TEXT   = "agent_text"       # final text response for dashboard display
-    TTS_START    = "tts_start"
-    TTS_CHUNK    = "tts_chunk"
-    TTS_END      = "tts_end"
-    ACTION       = "action"           # structured tool result for UI updates
-    ERROR        = "error"
+    VAD = "vad"
+    TRANSCRIPT = "transcript"
+    AGENT_STATE = "agent_state"
+    AGENT_TEXT = "agent_text"
+    TTS_START = "tts_start"
+    TTS_CHUNK = "tts_chunk"
+    TTS_END = "tts_end"
+    ACTION = "action"
+    ERROR = "error"
 
 
-# --- VAD events ---
 class ServerVAD(BaseModel):
     type: str = ServerMessageType.VAD.value
-    event: str  # "speech_start" | "speech_end"
+    event: str
 
 
-# --- Transcript ---
 class ServerTranscript(BaseModel):
     type: str = ServerMessageType.TRANSCRIPT.value
     final: bool
     text: str
 
 
-# --- Agent state ---
 class ServerAgentState(BaseModel):
     type: str = ServerMessageType.AGENT_STATE.value
-    state: str  # "processing" | "speaking" | "idle"
+    state: str
 
 
-# --- Agent text (full response for dashboard) ---
 class ServerAgentText(BaseModel):
     type: str = ServerMessageType.AGENT_TEXT.value
     text: str
 
 
-# --- TTS streaming ---
 class ServerTTSStart(BaseModel):
     type: str = ServerMessageType.TTS_START.value
     generation_id: int
+    encoding: str = "pcm_s16le"
+    sample_rate: int = 24000
+    channels: int = 1
 
 
 class ServerTTSChunk(BaseModel):
     type: str = ServerMessageType.TTS_CHUNK.value
     generation_id: int
-    data: str  # base64 audio
+    data: str
 
 
 class ServerTTSEnd(BaseModel):
@@ -100,7 +119,6 @@ class ServerTTSEnd(BaseModel):
     generation_id: int
 
 
-# --- Structured action result for frontend UI updates ---
 class ServerAction(BaseModel):
     type: str = ServerMessageType.ACTION.value
     intent: str
@@ -109,21 +127,29 @@ class ServerAction(BaseModel):
     data: Optional[dict] = None
 
 
-# --- Errors ---
 class ServerError(BaseModel):
     type: str = ServerMessageType.ERROR.value
     code: str
     message: str
 
 
-# ---------------------------------------------------------------------------
-# Parser
-# ---------------------------------------------------------------------------
-
 def parse_client_message(raw_json: str) -> dict:
-    """Parse raw JSON string from the client into a dict. Returns the dict."""
-    data = json.loads(raw_json)
+    try:
+        data = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Invalid JSON") from exc
+
     msg_type = data.get("type")
-    if msg_type not in [e.value for e in ClientMessageType]:
+    if msg_type not in {e.value for e in ClientMessageType}:
         raise ValueError(f"Unknown client message type: {msg_type}")
-    return data
+
+    if msg_type == ClientMessageType.AUDIO_CHUNK.value:
+        return ClientAudioChunk.model_validate(data).model_dump()
+    if msg_type == ClientMessageType.INTERRUPT.value:
+        return ClientInterrupt.model_validate(data).model_dump()
+    if msg_type == ClientMessageType.TURN_END.value:
+        return ClientTurnEnd.model_validate(data).model_dump()
+    if msg_type == ClientMessageType.TEXT_INPUT.value:
+        return ClientTextInput.model_validate(data).model_dump()
+
+    raise ValueError(f"Unsupported message type: {msg_type}")

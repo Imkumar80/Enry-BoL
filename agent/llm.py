@@ -28,6 +28,7 @@ def get_llm():
             model=model_name,
             base_url=base_url,
             temperature=0.1,
+            num_predict=int(os.getenv("OLLAMA_NUM_PREDICT", "96")),
         )
 
         _llm_instance = llm.bind_tools(TOOLS_LIST)

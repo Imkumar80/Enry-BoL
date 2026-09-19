@@ -105,21 +105,26 @@ class TurnManager:
         self._record("speech_start")
         self.state = TurnState.USER_SPEAKING
 
-        if self.asr is None:
-            self.asr = create_asr()
-            await self.asr.start(
-                on_partial=self._on_asr_partial,
-                on_final=self._on_asr_final,
-            )
-            else:
+        try:
+            if self.asr is None:
+                self.asr = create_asr()
+                await self.asr.start(
+                    on_partial=self._on_asr_partial,
+                    on_final=self._on_asr_final,
+                )
+            elif hasattr(self.asr, "begin_turn"):
                 self.asr.begin_turn()
+
             await self.send(ServerVAD(event="speech_start").model_dump())
             logger.info("Turn %s: speech started", self.turn_id)
         except Exception as exc:
             logger.exception("Failed to start ASR for turn %s", self.turn_id)
             self.asr = None
             self.state = TurnState.IDLE
-            await self.send(ServerError(code="ASR_ERROR", message=f"Failed to start ASR: {exc}").model_dump())
+            await self.send(ServerError(
+                code="ASR_ERROR",
+                message=f"Failed to start ASR: {exc}",
+            ).model_dump())
 
     async def _on_speech_end(self):
         if self.state != TurnState.USER_SPEAKING:

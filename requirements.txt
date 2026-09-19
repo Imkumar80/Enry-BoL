@@ -1,7 +1,7 @@
 # Enry-BoL Dependencies
 fastapi
 uvicorn
-pydantic>=2
+pydantic
 python-dotenv
 python-multipart
 
@@ -10,17 +10,17 @@ langgraph
 langchain-ollama
 langchain-core
 
-# Voice pipeline
+# Voice Pipeline
 webrtcvad-wheels
-deepgram-sdk<4
-cartesia>=4.2,<5
+deepgram-sdk
 httpx
 
-# Legacy NLU parser (not used by realtime voice path)
-google-generativeai
+# Legacy NLU Parser (Gemini fallback)
+# nlu_parser.py uses the new `google-genai` SDK (`from google import genai`),
+# NOT the older `google-generativeai` package — installing the latter causes
+# every /api/parse-command call to crash with:
+#   ImportError: cannot import name 'genai' from 'google'
+google-genai
 
-# Optional batch local ASR fallback
+# Optional: Local ASR fallback
 # faster-whisper
-# numpy
-
-pytest

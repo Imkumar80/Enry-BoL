@@ -11,9 +11,23 @@ def get_db_connection():
     return conn
 
 def get_db():
-    """FastAPI dependency to yield a database connection."""
-    with closing(get_db_connection()) as conn:
+    """FastAPI dependency to yield a database connection.
+
+    Auto-commits on successful request completion and rolls back on
+    error, so route handlers don't need to remember to call
+    conn.commit() themselves (several previously didn't, which meant
+    khata credit/payment, voice-driven stock updates, and checkout
+    invoices were silently lost as soon as the connection closed).
+    """
+    conn = get_db_connection()
+    try:
         yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 def init_db():
     """Initializes the database schema and seeds it with default data."""
@@ -22,25 +36,6 @@ def init_db():
             cursor = conn.cursor()
 
             # Create tables
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS carts (
-                session_id TEXT PRIMARY KEY,
-                customer_name TEXT NOT NULL DEFAULT 'Walk-in Customer',
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-            """)
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS cart_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                product_id INTEGER NOT NULL,
-                product_name TEXT NOT NULL,
-                quantity REAL NOT NULL CHECK(quantity > 0),
-                price REAL NOT NULL,
-                UNIQUE(session_id, product_id),
-                FOREIGN KEY(product_id) REFERENCES inventory(id)
-            );
-            """)
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS customers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -164,8 +159,6 @@ def update_stock(product_name, qty_change, conn=None):
         if not item:
             return False
         new_stock = item["stock"] + qty_change
-        if new_stock < 0:
-            return False
         conn.execute("UPDATE inventory SET stock = ? WHERE id = ?", (new_stock, item["id"]))
         return True
 
@@ -175,8 +168,6 @@ def update_stock(product_name, qty_change, conn=None):
             return False
         with c:
             new_stock = item["stock"] + qty_change
-            if new_stock < 0:
-                return False
             c.execute("UPDATE inventory SET stock = ? WHERE id = ?", (new_stock, item["id"]))
         return True
 
@@ -230,13 +221,7 @@ def create_invoice(customer_name, items_list, conn=None):
             if not db_item:
                 continue
             
-            qty = float(item["quantity"])
-            if qty <= 0:
-                raise ValueError("Invoice quantity must be greater than zero")
-            if qty > db_item["stock"]:
-                raise ValueError(
-                    f"Insufficient stock for {db_item['name']}: requested {qty}, available {db_item['stock']}"
-                )
+            qty = item["quantity"]
             price = db_item["price"]
             item_total = price * qty
             total_amount += item_total
@@ -262,7 +247,7 @@ def create_invoice(customer_name, items_list, conn=None):
             VALUES (?, ?, ?, ?, ?)
             """, (invoice_id, item["name"], item["qty"], item["price"], item["total"]))
             
-            new_stock = item["current_stock"] - item["qty"]
+            new_stock = max(0.0, item["current_stock"] - item["qty"])
             cursor.execute("UPDATE inventory SET stock = ? WHERE id = ?", (new_stock, item["id"]))
 
         return invoice_id
@@ -273,101 +258,6 @@ def create_invoice(customer_name, items_list, conn=None):
         with closing(get_db_connection()) as c:
             with c:
                 return _execute(c)
-
-
-def create_or_reset_cart(session_id, customer_name="Walk-in Customer", conn=None):
-    own = conn is None
-    connection = conn or get_db_connection()
-    try:
-        connection.execute(
-            "INSERT INTO carts(session_id, customer_name) VALUES(?, ?) "
-            "ON CONFLICT(session_id) DO UPDATE SET customer_name=excluded.customer_name, updated_at=CURRENT_TIMESTAMP",
-            (session_id, customer_name),
-        )
-        connection.execute("DELETE FROM cart_items WHERE session_id = ?", (session_id,))
-        if own:
-            connection.commit()
-        return True
-    finally:
-        if own:
-            connection.close()
-
-
-def add_cart_item(session_id, product_name, quantity, conn=None):
-    if quantity <= 0:
-        raise ValueError("quantity must be greater than zero")
-    own = conn is None
-    connection = conn or get_db_connection()
-    try:
-        item = get_inventory_item_by_name(product_name, connection)
-        if not item:
-            raise ValueError(f"Product '{product_name}' not found in catalog")
-        cart = connection.execute("SELECT session_id FROM carts WHERE session_id = ?", (session_id,)).fetchone()
-        if not cart:
-            create_or_reset_cart(session_id, "Walk-in Customer", connection)
-        connection.execute(
-            "INSERT INTO cart_items(session_id, product_id, product_name, quantity, price) VALUES(?,?,?,?,?) "
-            "ON CONFLICT(session_id, product_id) DO UPDATE SET quantity=quantity+excluded.quantity, price=excluded.price",
-            (session_id, item["id"], item["name"], quantity, item["price"]),
-        )
-        if own:
-            connection.commit()
-        return get_cart(session_id, connection)
-    finally:
-        if own:
-            connection.close()
-
-
-def get_cart(session_id, conn=None):
-    own = conn is None
-    connection = conn or get_db_connection()
-    try:
-        cart = connection.execute("SELECT * FROM carts WHERE session_id = ?", (session_id,)).fetchone()
-        items = [dict(r) for r in connection.execute(
-            "SELECT product_name, quantity, price, quantity*price AS total FROM cart_items WHERE session_id = ? ORDER BY id",
-            (session_id,),
-        ).fetchall()]
-        total = sum(i["total"] for i in items)
-        return {
-            "session_id": session_id,
-            "customer_name": cart["customer_name"] if cart else "Walk-in Customer",
-            "items": items,
-            "total": total,
-        }
-    finally:
-        if own:
-            connection.close()
-
-
-def checkout_cart(session_id, conn=None):
-    own = conn is None
-    connection = conn or get_db_connection()
-    try:
-        with connection:
-            cart = get_cart(session_id, connection)
-            if not cart["items"]:
-                raise ValueError("Cart is empty")
-
-            # Validate the complete cart before mutating anything.
-            for item in cart["items"]:
-                db_item = get_inventory_item_by_name(item["product_name"], connection)
-                if not db_item:
-                    raise ValueError(f"Product '{item['product_name']}' no longer exists")
-                if item["quantity"] > db_item["stock"]:
-                    raise ValueError(
-                        f"Insufficient stock for {db_item['name']}: requested {item['quantity']}, available {db_item['stock']}"
-                    )
-
-            invoice_id = create_invoice(cart["customer_name"], cart["items"], connection)
-            if invoice_id is None:
-                raise ValueError("Unable to create invoice")
-            connection.execute("DELETE FROM cart_items WHERE session_id = ?", (session_id,))
-            connection.execute("DELETE FROM carts WHERE session_id = ?", (session_id,))
-            return {"invoice_id": invoice_id, "total": cart["total"], "items": cart["items"]}
-    finally:
-        if own:
-            connection.close()
-
 
 def get_all_transactions(conn=None):
     query = """

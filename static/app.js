@@ -298,73 +298,55 @@ async function initMicrophone() {
 }
 
 // ============================================================================
-// TTS PLAYBACK (MP3 chunks from Cartesia via WebSocket)
+// TTS PLAYBACK — raw PCM16 streamed from Cartesia
 // ============================================================================
+let ttsAudioContext = null;
+let ttsNextStartTime = 0;
+let ttsSampleRate = 24000;
+let ttsPlaybackSources = new Set();
+
+function ensureTTSContext() {
+    if (!ttsAudioContext) {
+        ttsAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (ttsAudioContext.state === 'suspended') ttsAudioContext.resume();
+    return ttsAudioContext;
+}
 
 function stopTTSPlayback() {
     isAgentSpeaking = false;
     ttsAudioQueue = [];
     currentGenerationId = -1;
-
-    if (currentPlaybackSource) {
-        try { currentPlaybackSource.pause(); } catch(e) {}
-        currentPlaybackSource.src = '';
-        currentPlaybackSource = null;
+    for (const source of ttsPlaybackSources) {
+        try { source.stop(); } catch (e) {}
     }
+    ttsPlaybackSources.clear();
+    if (ttsAudioContext) ttsNextStartTime = ttsAudioContext.currentTime;
 }
 
-async function playTTSChunk(base64Audio, generationId) {
-    // Reject stale generations
+function pcm16ToAudioBuffer(base64Audio) {
+    const bytes = Uint8Array.from(atob(base64Audio), c => c.charCodeAt(0));
+    const samples = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2));
+    const ctx = ensureTTSContext();
+    const buffer = ctx.createBuffer(1, samples.length, ttsSampleRate);
+    const channel = buffer.getChannelData(0);
+    for (let i = 0; i < samples.length; i++) channel[i] = samples[i] / 32768;
+    return buffer;
+}
+
+function playTTSChunk(base64Audio, generationId) {
     if (generationId !== currentGenerationId) return;
+    const ctx = ensureTTSContext();
+    const buffer = pcm16ToAudioBuffer(base64Audio);
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
 
-    ttsAudioQueue.push({ generationId, data: base64Audio });
-    if (!isPlayingTTS) {
-        processPlaybackQueue();
-    }
-}
-
-async function processPlaybackQueue() {
-    if (ttsAudioQueue.length === 0) {
-        isPlayingTTS = false;
-        return;
-    }
-    isPlayingTTS = true;
-
-    const item = ttsAudioQueue.shift();
-
-    // Double-check generation is still valid
-    if (item.generationId !== currentGenerationId) {
-        processPlaybackQueue();
-        return;
-    }
-
-    try {
-        const audioBlob = new Blob(
-            [Uint8Array.from(atob(item.data), c => c.charCodeAt(0))],
-            { type: 'audio/mpeg' }
-        );
-        const audioUrl = URL.createObjectURL(audioBlob);
-        const audio = new Audio(audioUrl);
-        currentPlaybackSource = audio;
-
-        audio.onended = () => {
-            URL.revokeObjectURL(audioUrl);
-            currentPlaybackSource = null;
-            processPlaybackQueue();
-        };
-
-        audio.onerror = () => {
-            URL.revokeObjectURL(audioUrl);
-            currentPlaybackSource = null;
-            processPlaybackQueue();
-        };
-
-        await audio.play();
-    } catch (err) {
-        console.error("TTS playback error:", err);
-        currentPlaybackSource = null;
-        processPlaybackQueue();
-    }
+    const startAt = Math.max(ctx.currentTime + 0.015, ttsNextStartTime);
+    source.start(startAt);
+    ttsNextStartTime = startAt + buffer.duration;
+    ttsPlaybackSources.add(source);
+    source.onended = () => ttsPlaybackSources.delete(source);
 }
 
 // ============================================================================
@@ -444,8 +426,10 @@ function handleServerMessage(msg) {
 
         case "tts_start":
             currentGenerationId = msg.generation_id;
+            ttsSampleRate = msg.sample_rate || 24000;
+            ttsNextStartTime = ensureTTSContext().currentTime + 0.02;
             isAgentSpeaking = true;
-            ttsAudioQueue = []; // Clear any stale chunks
+            ttsAudioQueue = [];
             break;
 
         case "tts_chunk":

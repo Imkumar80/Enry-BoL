@@ -164,6 +164,8 @@ def update_stock(product_name, qty_change, conn=None):
         if not item:
             return False
         new_stock = item["stock"] + qty_change
+        if new_stock < 0:
+            return False
         conn.execute("UPDATE inventory SET stock = ? WHERE id = ?", (new_stock, item["id"]))
         return True
 
@@ -173,6 +175,8 @@ def update_stock(product_name, qty_change, conn=None):
             return False
         with c:
             new_stock = item["stock"] + qty_change
+            if new_stock < 0:
+                return False
             c.execute("UPDATE inventory SET stock = ? WHERE id = ?", (new_stock, item["id"]))
         return True
 
@@ -226,7 +230,13 @@ def create_invoice(customer_name, items_list, conn=None):
             if not db_item:
                 continue
             
-            qty = item["quantity"]
+            qty = float(item["quantity"])
+            if qty <= 0:
+                raise ValueError("Invoice quantity must be greater than zero")
+            if qty > db_item["stock"]:
+                raise ValueError(
+                    f"Insufficient stock for {db_item["name"]}: requested {qty}, available {db_item["stock"]}"
+                )
             price = db_item["price"]
             item_total = price * qty
             total_amount += item_total
@@ -252,7 +262,7 @@ def create_invoice(customer_name, items_list, conn=None):
             VALUES (?, ?, ?, ?, ?)
             """, (invoice_id, item["name"], item["qty"], item["price"], item["total"]))
             
-            new_stock = max(0.0, item["current_stock"] - item["qty"])
+            new_stock = item["current_stock"] - item["qty"]
             cursor.execute("UPDATE inventory SET stock = ? WHERE id = ?", (new_stock, item["id"]))
 
         return invoice_id

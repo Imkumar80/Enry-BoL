@@ -1,26 +1,10 @@
 """
-voice/turn_manager.py — Server-side Turn State Machine
-=======================================================
-Authoritative turn management:
-  IDLE → USER_SPEAKING → END_PENDING → PROCESSING → AGENT_SPEAKING → IDLE
-                                                                    ↓
-                                                              INTERRUPTED
-                                                                    ↓
-                                                            USER_SPEAKING
-
-Responsibilities:
-  - Speech start/end detection
-  - Endpoint detection
-  - Turn creation with unique IDs
-  - Generation ID management
-  - Interruption / barge-in
-  - Cancellation of stale TTS/LLM tasks
+voice/turn_manager.py — authoritative realtime turn state machine.
 """
 
 import asyncio
 import logging
 import time
-import uuid
 from enum import Enum
 from typing import Optional, Callable, Awaitable
 
@@ -35,135 +19,143 @@ logger = logging.getLogger("turn_manager")
 
 
 class TurnState(str, Enum):
-    IDLE            = "IDLE"
-    USER_SPEAKING   = "USER_SPEAKING"
-    END_PENDING     = "END_PENDING"
-    PROCESSING      = "PROCESSING"
-    AGENT_SPEAKING  = "AGENT_SPEAKING"
-    INTERRUPTED     = "INTERRUPTED"
+    IDLE = "IDLE"
+    USER_SPEAKING = "USER_SPEAKING"
+    END_PENDING = "END_PENDING"
+    PROCESSING = "PROCESSING"
+    AGENT_SPEAKING = "AGENT_SPEAKING"
+    INTERRUPTED = "INTERRUPTED"
 
 
 class TurnManager:
-    """
-    Manages conversational turns.
-    Connects VAD → ASR → LangGraph → TTS.
-    """
-
     def __init__(self, send_fn: Callable[[dict], Awaitable], session_id: str):
         self.send = send_fn
         self.session_id = session_id
-
-        # State
         self.state = TurnState.IDLE
-        self.turn_id: int = 0
-        self.generation_id: int = 0
+        self.turn_id = 0
+        self.generation_id = 0
 
-        # Components (created per session)
         self.vad = VoiceActivityDetector()
         self.asr: Optional[StreamingASR] = None
-
-        # Running tasks
         self._processing_task: Optional[asyncio.Task] = None
-
-        # Telemetry timestamps for current turn
+        self._tts_provider = None
+        self._conversation_messages = []
+        self._pending_confirmation: Optional[dict] = None
         self._t: dict[str, float] = {}
 
-        # Conversation history for LangGraph
-        self._conversation_messages: list = []
-
-        # Pending confirmation state
-        self._pending_confirmation: Optional[dict] = None
-
-    def _record(self, event: str):
-        self._t[event] = time.time()
+    def _record(self, key: str):
+        self._t[key] = time.perf_counter()
 
     def _log_turn_telemetry(self):
         t = self._t
         metrics = []
-        if "speech_start" in t and "vad_endpoint" in t:
-            metrics.append(f"speech_duration={(t['vad_endpoint']-t['speech_start'])*1000:.0f}ms")
-        if "vad_endpoint" in t and "asr_final" in t:
-            metrics.append(f"endpoint_to_asr={(t['asr_final']-t['vad_endpoint'])*1000:.0f}ms")
-        if "asr_final" in t and "graph_start" in t:
-            metrics.append(f"asr_to_graph={(t['graph_start']-t['asr_final'])*1000:.0f}ms")
-        if "graph_start" in t and "graph_done" in t:
-            metrics.append(f"graph_time={(t['graph_done']-t['graph_start'])*1000:.0f}ms")
-        if "tts_request" in t and "tts_first_chunk" in t:
-            metrics.append(f"tts_ttfa={(t['tts_first_chunk']-t['tts_request'])*1000:.0f}ms")
-        if "speech_start" in t and "tts_first_chunk" in t:
-            metrics.append(f"total_latency={(t['tts_first_chunk']-t['speech_start'])*1000:.0f}ms")
-        if "interrupt_start" in t and "tts_cancelled" in t:
-            metrics.append(f"barge_in={(t['tts_cancelled']-t['interrupt_start'])*1000:.0f}ms")
-
+        pairs = [
+            ("speech_start", "first_partial", "audio_to_first_asr_partial_ms"),
+            ("vad_endpoint", "asr_final", "speech_end_to_final_asr_ms"),
+            ("asr_final", "graph_start", "final_asr_to_graph_ms"),
+            ("graph_start", "llm_first_token", "graph_to_llm_first_token_ms"),
+            ("graph_start", "graph_done", "graph_time_ms"),
+            ("tts_request", "tts_first_chunk", "tts_ttfa_ms"),
+            ("speech_start", "tts_first_chunk", "total_turn_latency_ms"),
+            ("interrupt_start", "tts_cancelled", "tts_cancel_latency_ms"),
+        ]
+        for a, b, label in pairs:
+            if a in t and b in t:
+                metrics.append(f"{label}={(t[b]-t[a])*1000:.1f}")
         if metrics:
-            logger.info(f"[Session {self.session_id[:8]}] TURN {self.turn_id} | {' | '.join(metrics)}")
-
-    # ------------------------------------------------------------------
-    # Audio ingestion from gateway
-    # ------------------------------------------------------------------
+            logger.info(
+                "[Session %s] TURN %s | %s",
+                self.session_id[:8], self.turn_id, " | ".join(metrics),
+            )
 
     async def on_audio(self, pcm_data: bytes):
-        """Process incoming PCM audio. Called by the gateway for every audio chunk."""
-        # Run VAD
+        if not pcm_data:
+            return
+
         events = self.vad.process_audio(pcm_data)
 
+        # A single websocket chunk can contain speech + endpoint silence.
+        # Process START first, then deliver the entire chunk to ASR, and only
+        # then finalize. This prevents the final chunk from being lost.
+        saw_end = False
         for event in events:
             if event == VADEvent.SPEECH_START:
                 await self._on_speech_start()
             elif event == VADEvent.SPEECH_END:
-                await self._on_speech_end()
+                saw_end = True
 
-        # If user is speaking, push audio to ASR
-        if self.state in (TurnState.USER_SPEAKING, TurnState.END_PENDING):
-            if self.asr:
-                await self.asr.push_audio(pcm_data)
+        if self.asr and self.state in (
+            TurnState.USER_SPEAKING, TurnState.END_PENDING
+        ):
+            await self.asr.push_audio(pcm_data)
 
-    # ------------------------------------------------------------------
-    # VAD-driven state transitions
-    # ------------------------------------------------------------------
+        if saw_end:
+            await self._on_speech_end()
 
     async def _on_speech_start(self):
-        # If agent is speaking, this is a barge-in
-        if self.state == TurnState.AGENT_SPEAKING:
+        if self.state in (TurnState.AGENT_SPEAKING, TurnState.PROCESSING):
             await self.on_interrupt()
 
-        if self.state in (TurnState.IDLE, TurnState.INTERRUPTED):
-            self.turn_id += 1
-            self._t = {}
-            self._record("speech_start")
-            self.state = TurnState.USER_SPEAKING
+        if self.state not in (TurnState.IDLE, TurnState.INTERRUPTED):
+            return
 
-            # Start ASR
-            self.asr = create_asr()
-            await self.asr.start(
-                on_partial=self._on_asr_partial,
-                on_final=self._on_asr_final
-            )
+        self.turn_id += 1
+        self._t = {}
+        self._record("speech_start")
+        self.state = TurnState.USER_SPEAKING
 
-            await self.send(ServerVAD(event="speech_start").model_dump())
-            logger.info(f"Turn {self.turn_id}: Speech started")
+        self.asr = create_asr()
+        await self.asr.start(
+            on_partial=self._on_asr_partial,
+            on_final=self._on_asr_final,
+        )
+        await self.send(ServerVAD(event="speech_start").model_dump())
+        logger.info("Turn %s: speech started", self.turn_id)
 
     async def _on_speech_end(self):
-        if self.state == TurnState.USER_SPEAKING:
-            self._record("vad_endpoint")
-            self.state = TurnState.END_PENDING
-            await self.send(ServerVAD(event="speech_end").model_dump())
-            logger.info(f"Turn {self.turn_id}: Endpoint detected")
+        if self.state != TurnState.USER_SPEAKING:
+            return
 
-            # Finalize ASR
+        self._record("vad_endpoint")
+        self.state = TurnState.END_PENDING
+        await self.send(ServerVAD(event="speech_end").model_dump())
+
+        # Short clicks/coughs should not reach the agent.
+        if self.vad.last_speech_duration_ms < self.vad.min_speech_ms:
+            logger.info("Turn %s: discarded short speech burst (%sms)",
+                        self.turn_id, self.vad.last_speech_duration_ms)
             if self.asr:
-                result = await self.asr.finish()
-                if result and result.text.strip():
-                    self._record("asr_final")
-                    await self.send(ServerTranscript(final=True, text=result.text).model_dump())
-                    await self._process_transcript(result.text)
-                else:
-                    logger.info(f"Turn {self.turn_id}: Empty transcript, returning to IDLE")
-                    self.state = TurnState.IDLE
+                await self.asr.cancel()
+                self.asr = None
+            self.state = TurnState.IDLE
+            return
 
-    # ------------------------------------------------------------------
-    # ASR callbacks
-    # ------------------------------------------------------------------
+        asr = self.asr
+        self.asr = None
+        try:
+            result = await asr.finish() if asr else None
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Turn %s: ASR finalization failed", self.turn_id)
+            result = None
+
+        if not result or not result.text.strip():
+            self.state = TurnState.IDLE
+            return
+
+        self._record("asr_final")
+        await self.send(ServerTranscript(final=True, text=result.text).model_dump())
+        self._processing_task = asyncio.create_task(
+            self._process_transcript(result.text, self.generation_id)
+        )
+        try:
+            await self._processing_task
+        except asyncio.CancelledError:
+            logger.info("Turn %s: processing cancelled", self.turn_id)
+        finally:
+            if self._processing_task and self._processing_task.done():
+                self._processing_task = None
 
     async def _on_asr_partial(self, partial: ASRPartial):
         if "first_partial" not in self._t:
@@ -171,59 +163,76 @@ class TurnManager:
         await self.send(ServerTranscript(final=False, text=partial.text).model_dump())
 
     async def _on_asr_final(self, final: ASRFinal):
-        """Called by Deepgram's interim final results. The true final is from finish()."""
-        pass  # We use the finish() flow for endpoint-based turns
-
-    # ------------------------------------------------------------------
-    # Text input (from dashboard typed commands)
-    # ------------------------------------------------------------------
+        # Deepgram can emit finalized segments before VAD endpointing.
+        # They are retained by the ASR implementation; the endpoint remains
+        # authoritative for starting agent processing.
+        return
 
     async def on_text_input(self, text: str):
-        """Process a typed text command, bypassing VAD/ASR."""
+        text = text.strip()
+        if not text:
+            return
+        if self.state in (TurnState.PROCESSING, TurnState.AGENT_SPEAKING):
+            await self.on_interrupt()
+
         self.turn_id += 1
         self._t = {}
         self._record("asr_final")
         await self.send(ServerTranscript(final=True, text=text).model_dump())
-        await self._process_transcript(text)
 
-    # ------------------------------------------------------------------
-    # Transcript → LangGraph processing
-    # ------------------------------------------------------------------
+        self._processing_task = asyncio.create_task(
+            self._process_transcript(text, self.generation_id)
+        )
+        try:
+            await self._processing_task
+        except asyncio.CancelledError:
+            logger.info("Turn %s: text processing cancelled", self.turn_id)
+        finally:
+            if self._processing_task and self._processing_task.done():
+                self._processing_task = None
 
-    async def _process_transcript(self, transcript: str):
+    async def force_end_turn(self):
+        if self.state == TurnState.USER_SPEAKING:
+            await self._on_speech_end()
+
+    async def _process_transcript(self, transcript: str, generation_at_start: int):
         self.state = TurnState.PROCESSING
         await self.send(ServerAgentState(state="processing").model_dump())
 
-        # Check if this is a confirmation response
+        # A stale task must never mutate state or speak.
+        if generation_at_start != self.generation_id:
+            return
+
         if self._pending_confirmation:
-            affirmative = transcript.lower().strip()
-            yes_words = {"haan", "ha", "haa", "yes", "ok", "theek hai", "theek", "kar do",
-                         "karo", "sahi hai", "confirm", "yes please", "ji", "ji haan", "hanji"}
-            if any(w in affirmative for w in yes_words):
-                # Execute the pending action
-                await self._execute_confirmed_action()
+            outcome = self._parse_confirmation(transcript)
+            if outcome == "confirm":
+                await self._execute_confirmed_action(generation_at_start)
                 return
-            else:
-                # Cancel the pending action
+            if outcome == "cancel":
                 self._pending_confirmation = None
-                response_text = "Theek hai, cancel kar diya."
-                await self._speak_response(response_text)
+                await self._speak_response("Theek hai, cancel kar diya.", generation_at_start)
                 return
+            # Modification/ambiguous confirmation goes back through the LLM.
+            self._pending_confirmation = None
 
         self._record("graph_start")
-
         try:
-            # Import here to avoid circular imports at module level
             from agent.graph import process_turn
-            result = await process_turn(transcript, self._conversation_messages, self._pending_confirmation)
+            result = await process_turn(
+                transcript, self._conversation_messages, self._pending_confirmation
+            )
+            if generation_at_start != self.generation_id:
+                return
+
             self._record("graph_done")
-
-            response_text = result.get("response_text", "Samajh nahi aaya, dobara boliye.")
+            response_text = result.get(
+                "response_text", "Samajh nahi aaya, dobara boliye."
+            )
             action_data = result.get("action_data")
-            needs_confirmation = result.get("needs_confirmation", False)
-            self._conversation_messages = result.get("messages", self._conversation_messages)
+            self._conversation_messages = result.get(
+                "messages", self._conversation_messages
+            )
 
-            # Send action data for UI updates (cart, customer selection, etc.)
             if action_data:
                 await self.send(ServerAction(
                     intent=action_data.get("intent", "unknown"),
@@ -232,32 +241,44 @@ class TurnManager:
                     data=action_data.get("data"),
                 ).model_dump())
 
-            if needs_confirmation:
-                self._pending_confirmation = result.get("confirmation_data")
+            self._pending_confirmation = (
+                result.get("confirmation_data")
+                if result.get("needs_confirmation") else None
+            )
+            await self._speak_response(response_text, generation_at_start)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Turn %s: processing failed", self.turn_id)
+            if generation_at_start == self.generation_id:
+                await self.send(ServerError(
+                    code="PROCESSING_ERROR", message=str(exc)
+                ).model_dump())
+                await self._speak_response(
+                    "Ek second, request process nahi ho paayi. Phir se try kijiye.",
+                    generation_at_start,
+                )
 
-            # Speak the response
-            await self._speak_response(response_text)
+    @staticmethod
+    def _parse_confirmation(text: str) -> str:
+        normalized = " ".join(text.lower().strip().split())
+        yes = {"haan", "ha", "haa", "yes", "ok", "okay", "theek", "theek hai",
+               "kar do", "karo", "confirm", "ji haan", "hanji"}
+        no = {"nahi", "nahin", "no", "cancel", "mat karo", "rehne do", "chhodo"}
+        if normalized in yes or normalized in no:
+            return "confirm" if normalized in yes else "cancel"
+        return "modify"
 
-        except Exception as e:
-            logger.error(f"Turn {self.turn_id}: Processing error: {e}", exc_info=True)
-            error_text = "Ek second, request process nahi ho paayi. Phir se try kijiye."
-            await self.send(ServerError(code="PROCESSING_ERROR", message=str(e)).model_dump())
-            await self._speak_response(error_text)
-
-    async def _execute_confirmed_action(self):
-        """Execute a previously confirmed financial action."""
+    async def _execute_confirmed_action(self, generation_at_start: int):
         conf = self._pending_confirmation
         self._pending_confirmation = None
-
         try:
             from agent.graph import execute_confirmed_action
             result = await execute_confirmed_action(conf, self._conversation_messages)
+            if generation_at_start != self.generation_id:
+                return
             self._record("graph_done")
-
-            response_text = result.get("response_text", "Ho gaya.")
             action_data = result.get("action_data")
-            self._conversation_messages = result.get("messages", self._conversation_messages)
-
             if action_data:
                 await self.send(ServerAction(
                     intent=action_data.get("intent", "unknown"),
@@ -265,17 +286,23 @@ class TurnManager:
                     message=action_data.get("message", ""),
                     data=action_data.get("data"),
                 ).model_dump())
+            self._conversation_messages = result.get(
+                "messages", self._conversation_messages
+            )
+            await self._speak_response(
+                result.get("response_text", "Ho gaya."), generation_at_start
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Confirmed action failed")
+            await self._speak_response("Action fail ho gaya. Please try again.",
+                                       generation_at_start)
 
-            await self._speak_response(response_text)
-        except Exception as e:
-            logger.error(f"Confirmed action error: {e}", exc_info=True)
-            await self._speak_response("Action fail ho gaya. Please try again.")
+    async def _speak_response(self, text: str, generation_at_start: int):
+        if generation_at_start != self.generation_id:
+            return
 
-    # ------------------------------------------------------------------
-    # TTS response
-    # ------------------------------------------------------------------
-
-    async def _speak_response(self, text: str):
         self.state = TurnState.AGENT_SPEAKING
         self.generation_id += 1
         gen_id = self.generation_id
@@ -283,76 +310,79 @@ class TurnManager:
 
         await self.send(ServerAgentState(state="speaking").model_dump())
         await self.send(ServerAgentText(text=text).model_dump())
-        await self.send(ServerTTSStart(generation_id=gen_id).model_dump())
+        await self.send(ServerTTSStart(
+            generation_id=gen_id,
+            encoding="pcm_s16le",
+            sample_rate=int(__import__("os").getenv("CARTESIA_SAMPLE_RATE", "24000")),
+            channels=1,
+        ).model_dump())
 
-        first_chunk = True
         try:
             from tts.cartesia import CartesiaTTS
-            tts = CartesiaTTS()
-
-            async for chunk_b64 in tts.stream(text, gen_id):
-                # Check if this generation has been invalidated (barge-in)
+            self._tts_provider = CartesiaTTS()
+            async for chunk_b64 in self._tts_provider.stream(text, gen_id):
                 if self.generation_id != gen_id:
-                    logger.info(f"TTS generation {gen_id} invalidated, stopping stream")
-                    await tts.cancel(gen_id)
-                    break
-
-                if first_chunk:
+                    await self._tts_provider.cancel(gen_id)
+                    return
+                if "tts_first_chunk" not in self._t:
                     self._record("tts_first_chunk")
-                    first_chunk = False
+                await self.send(ServerTTSChunk(
+                    generation_id=gen_id, data=chunk_b64
+                ).model_dump())
 
-                await self.send(ServerTTSChunk(generation_id=gen_id, data=chunk_b64).model_dump())
-
-        except Exception as e:
-            logger.error(f"TTS error: {e}", exc_info=True)
-            await self.send(ServerError(code="TTS_ERROR", message=str(e)).model_dump())
-
-        # Only send TTS_END if this generation is still active
-        if self.generation_id == gen_id:
-            await self.send(ServerTTSEnd(generation_id=gen_id).model_dump())
-            self.state = TurnState.IDLE
-            await self.send(ServerAgentState(state="idle").model_dump())
-            self._log_turn_telemetry()
-
-    # ------------------------------------------------------------------
-    # Interruption / barge-in
-    # ------------------------------------------------------------------
+            if self.generation_id == gen_id:
+                await self.send(ServerTTSEnd(generation_id=gen_id).model_dump())
+                self.state = TurnState.IDLE
+                await self.send(ServerAgentState(state="idle").model_dump())
+                self._log_turn_telemetry()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("TTS error")
+            if self.generation_id == gen_id:
+                await self.send(ServerError(
+                    code="TTS_ERROR", message=str(exc)
+                ).model_dump())
+                self.state = TurnState.IDLE
+                await self.send(ServerAgentState(state="idle").model_dump())
 
     async def on_interrupt(self):
-        """Handle barge-in: cancel TTS, invalidate generation, transition to user speaking."""
-        if self.state not in (TurnState.AGENT_SPEAKING, TurnState.PROCESSING):
+        if self.state not in (
+            TurnState.AGENT_SPEAKING, TurnState.PROCESSING
+        ):
             return
 
         self._record("interrupt_start")
-        logger.info(f"Turn {self.turn_id}: BARGE-IN! Cancelling generation {self.generation_id}")
+        self.generation_id += 1
 
-        prev_gen = self.generation_id
-        self.generation_id += 1  # Invalidate the current generation
-        self.state = TurnState.INTERRUPTED
+        if self._tts_provider:
+            try:
+                await self._tts_provider.cancel(self.generation_id - 1)
+            except Exception:
+                logger.exception("TTS cancellation failed")
+            self._tts_provider = None
 
-        # Cancel any running processing task
         if self._processing_task and not self._processing_task.done():
             self._processing_task.cancel()
-            self._processing_task = None
 
-        # Cancel ASR if running
         if self.asr:
             await self.asr.cancel()
             self.asr = None
 
+        self.state = TurnState.INTERRUPTED
         self._record("tts_cancelled")
         await self.send(ServerAgentState(state="idle").model_dump())
         self._log_turn_telemetry()
 
-    # ------------------------------------------------------------------
-    # Cleanup
-    # ------------------------------------------------------------------
-
     async def cleanup(self):
-        """Clean up resources when the session ends."""
+        self.generation_id += 1
+        if self._tts_provider:
+            try:
+                await self._tts_provider.cancel(self.generation_id - 1)
+            except Exception:
+                pass
         if self.asr:
             await self.asr.cancel()
         if self._processing_task and not self._processing_task.done():
             self._processing_task.cancel()
         self.vad.reset()
-        logger.info(f"Session {self.session_id[:8]} cleaned up")

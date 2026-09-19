@@ -46,6 +46,7 @@ class DeepgramStreamingASR(StreamingASR):
         self._accumulated_text = ""
         self._final_received = asyncio.Event()
         self._last_final: Optional[ASRFinal] = None
+        self._turn_started = False
 
     async def start(self, on_partial=None, on_final=None):
         if not self._api_key:
@@ -111,33 +112,38 @@ class DeepgramStreamingASR(StreamingASR):
 
         logger.info("Deepgram started: model=%s language=%s", model, language)
 
+    def begin_turn(self):
+        self._accumulated_text = ""
+        self._last_final = None
+        self._final_received = asyncio.Event()
+        self._turn_started = True
+
+    async def end_turn(self) -> Optional[ASRFinal]:
+        if not self._is_running:
+            return self._last_final
+        try:
+            await asyncio.wait_for(self._final_received.wait(), timeout=0.35)
+        except asyncio.TimeoutError:
+            pass
+        result = self._last_final
+        self._turn_started = False
+        return result
+
     async def push_audio(self, pcm_data: bytes):
         if self._is_running and self._connection:
             await self._connection.send(pcm_data)
 
     async def finish(self) -> Optional[ASRFinal]:
-        if not self._is_running or not self._connection:
-            return self._last_final or (
-                ASRFinal(self._accumulated_text) if self._accumulated_text else None
-            )
-
-        self._is_running = False
+        if not self._connection:
+            return self._last_final
         connection = self._connection
+        self._connection = None
+        self._is_running = False
         try:
-            # Wait for Deepgram to return the final result before sending CloseStream
-            try:
-                await asyncio.wait_for(self._final_received.wait(), timeout=2.0)
-            except asyncio.TimeoutError:
-                pass
             await connection.finish()
         except Exception:
             logger.exception("Deepgram finish failed")
-        finally:
-            self._connection = None
-
-        return self._last_final or (
-            ASRFinal(self._accumulated_text) if self._accumulated_text else None
-        )
+        return self._last_final
 
     async def cancel(self):
         self._is_running = False

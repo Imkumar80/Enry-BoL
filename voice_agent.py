@@ -13,11 +13,10 @@ from line.voice_agent_app import VoiceAgentApp
 import db
 import nlu_parser
 
-load_dotenv()
+load_dotenv(override=True)
 
-# Ensure litellm can find the OpenRouter API key
-# litellm reads OPENROUTER_API_KEY from the environment directly
-os.environ["OPENROUTER_API_KEY"] = os.getenv("OPENROUTER_API_KEY", "")
+# Using Gemini for the Voice Agent
+os.environ["GEMINI_API_KEY"] = os.getenv("GEMINI_API_KEY", "")
 
 # --- 1. Define Cartesia Line Loopback Tools ---
 
@@ -178,8 +177,8 @@ async def get_agent(env, call_request):
     )
     
     return LlmAgent(
-        model="openrouter/qwen/qwen-2.5-coder-32b-instruct:free",
-        api_key=os.getenv("OPENROUTER_API_KEY"),
+        model="gemini/gemini-2.0-flash",
+        api_key=os.getenv("GEMINI_API_KEY"),
         tools=[execute_ledger_command, end_call],
         config=LlmConfig(
             system_prompt=system_prompt,

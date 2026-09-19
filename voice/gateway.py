@@ -116,6 +116,6 @@ class VoiceGateway:
             logger.info("Voice session ended: %s", self.session_id[:8])
 
 
-@router.websocket("/ws/benchmark")
+@router.websocket("/ws/voice")
 async def voice_endpoint(websocket: WebSocket):
     await VoiceGateway(websocket).handle_connection()

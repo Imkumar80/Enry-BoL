@@ -302,7 +302,7 @@ async function initMicrophone() {
 // ============================================================================
 let ttsAudioContext = null;
 let ttsNextStartTime = 0;
-let ttsSampleRate = 24000;
+let ttsSampleRate = 44100;
 let ttsPlaybackSources = new Set();
 
 function ensureTTSContext() {

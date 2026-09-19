@@ -23,7 +23,7 @@ async def run_benchmark(audio_file):
     t_tts_start = None
     t_first_tts_chunk = None
 
-    async with websockets.connect("ws://localhost:8000/ws/benchmark") as ws:
+    async with websockets.connect("ws://localhost:8000/ws/voice") as ws:
         # Task to send audio
         async def sender():
             nonlocal pcm_data

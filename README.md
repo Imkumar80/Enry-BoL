@@ -177,7 +177,7 @@ GEMINI_MODEL="gemini-3.6-flash"
 DEEPGRAM_API_KEY="your-deepgram-key"
 
 CARTESIA_API_KEY="your-cartesia-key"
-CARTESIA_VOICE_ID="3b554273-4299-48b9-9aaf-eefd438e3941"
+CARTESIA_VOICE_ID="your-cartesia-voice-id"
 
 PORT=8000
 HOST=127.0.0.1

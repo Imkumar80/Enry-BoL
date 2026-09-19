@@ -1,7 +1,7 @@
 # Enry-BoL Dependencies
 fastapi
 uvicorn
-pydantic
+pydantic>=2
 python-dotenv
 python-multipart
 
@@ -10,13 +10,15 @@ langgraph
 langchain-ollama
 langchain-core
 
-# Voice Pipeline
+# Voice pipeline
 webrtcvad-wheels
 deepgram-sdk
+websockets>=15
 httpx
 
-# Legacy NLU Parser (Gemini fallback)
+# Legacy NLU parser (not used by realtime voice path)
 google-generativeai
 
-# Optional: Local ASR fallback
+# Optional batch local ASR fallback
 # faster-whisper
+# numpy

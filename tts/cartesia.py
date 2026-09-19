@@ -24,8 +24,8 @@ class CartesiaTTS(TTSProvider):
             "6ccbfb76-1fc6-48b9-9aaf-eefd438e3941",
         )
         self._model_id = os.getenv("CARTESIA_MODEL_ID", "sonic-latest")
-        self._sample_rate = int(os.getenv("CARTESIA_SAMPLE_RATE", "44100"))
-        self._language = os.getenv("CARTESIA_LANGUAGE", "en")
+        self._sample_rate = int(os.getenv("CARTESIA_SAMPLE_RATE", "24000"))
+        self._language = os.getenv("CARTESIA_LANGUAGE", "hi")
         self._cancelled: set[int] = set()
 
     async def stream(self, text: str, generation_id: int) -> AsyncGenerator[str, None]:

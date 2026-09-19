@@ -24,6 +24,10 @@ static_dir = os.path.join(os.path.dirname(__file__), "static")
 os.makedirs(static_dir, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+# Mount Voice OS Gateway
+from voice.gateway import router as voice_router
+app.include_router(voice_router)
+
 @app.get("/")
 def read_root():
     """Redirects to the frontend index page."""

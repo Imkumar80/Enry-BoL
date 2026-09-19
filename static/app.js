@@ -195,97 +195,130 @@ function removeCartItem(index) {
     addLogItem(`Removed ${item.name} from cart.`, 'system');
 }
 
-// --- VOICE OS OPERATIONS ---
-let wakeWordListener = null;
+// --- VOICE OS OPERATIONS (Raw Audio Streaming + VAD) ---
 let isAwake = false;
+let currentTurnId = "0";
+let activeAudio = null;
+let audioSequence = 0;
+
+function _base64EncodePCM(buffer) {
+    let binary = '';
+    let bytes = new Uint8Array(buffer.buffer);
+    let len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return window.btoa(binary);
+}
+
+function convertFloat32ToInt16(buffer) {
+    let l = buffer.length;
+    let buf = new Int16Array(l);
+    while (l--) {
+        buf[l] = Math.min(1, buffer[l]) * 0x7FFF;
+    }
+    return buf;
+}
+
+function downsampleBuffer(buffer, sampleRate, outSampleRate) {
+    if (outSampleRate === sampleRate) return buffer;
+    const sampleRateRatio = sampleRate / outSampleRate;
+    const newLength = Math.round(buffer.length / sampleRateRatio);
+    const result = new Float32Array(newLength);
+    let offsetResult = 0;
+    let offsetBuffer = 0;
+    while (offsetResult < result.length) {
+        const nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
+        let accum = 0, count = 0;
+        for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+            accum += buffer[i];
+            count++;
+        }
+        result[offsetResult] = accum / count;
+        offsetResult++;
+        offsetBuffer = nextOffsetBuffer;
+    }
+    return result;
+}
 
 function initSpeechRecognition() {
-    if (!('webkitSpeechRecognition' in window)) {
-        voiceStatus.innerText = "Speech recognition not supported in this browser. Please use Chrome.";
-        btnMic.disabled = true;
-        return;
+    navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(stream);
+        
+        scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+        source.connect(scriptProcessor);
+        
+        // Output must be connected for onaudioprocess to fire
+        scriptProcessor.connect(audioContext.destination);
+        
+        scriptProcessor.onaudioprocess = (e) => {
+            if (!isAwake || !voiceSocket || voiceSocket.readyState !== WebSocket.OPEN) return;
+            
+            const inputData = e.inputBuffer.getChannelData(0);
+            
+            // Client-side VAD (energy-based) for immediate Barge-in
+            let energy = 0;
+            for (let i = 0; i < inputData.length; i++) {
+                energy += inputData[i] * inputData[i];
+            }
+            const rms = Math.sqrt(energy / inputData.length);
+            
+            // Immediate Client-Side Barge-in
+            if (isAgentSpeaking && rms > 0.05) {
+                console.log("Client-side barge-in triggered! RMS Energy:", rms);
+                stopAgentAudio();
+                
+                voiceSocket.send(JSON.stringify({
+                    type: "interrupt",
+                    turn_id: currentTurnId
+                }));
+            }
+            
+            // Send PCM audio frames if listening
+            if (isListening) {
+                const downsampled = downsampleBuffer(inputData, audioContext.sampleRate, 16000);
+                const pcm16 = convertFloat32ToInt16(downsampled);
+                
+                audioSequence++;
+                voiceSocket.send(JSON.stringify({
+                    type: "audio",
+                    sequence: audioSequence,
+                    data: _base64EncodePCM(pcm16)
+                }));
+            }
+        };
+    }).catch((err) => {
+        console.error("Microphone access failed", err);
+        voiceStatus.innerText = "Microphone access denied.";
+        btnMic.classList.remove('listening');
+        micIcon.innerText = 'mic_off';
+    });
+}
+
+function stopAgentAudio() {
+    isAgentSpeaking = false;
+    
+    // Wipe the playback queue on barge-in
+    playQueue = [];
+    activeGenerationId = null;
+    
+    if (activeAudio) {
+        activeAudio.pause();
+        activeAudio.currentTime = 0;
+        activeAudio = null;
     }
-    
-    wakeWordListener = new webkitSpeechRecognition();
-    wakeWordListener.continuous = true;
-    wakeWordListener.interimResults = true;
-    wakeWordListener.lang = 'hi-IN'; // Works for Hinglish/Hindi/English
-    
-    wakeWordListener.onstart = () => {
-        isListening = true;
-        if (!isAwake) {
-            voiceStatus.innerText = "Listening for wake word (Say 'Hey Enry')...";
-            btnMic.classList.add('listening');
-            micIcon.innerText = 'mic_none';
-        }
-    };
-    
-    wakeWordListener.onresult = (event) => {
-        if (isAgentSpeaking) return; // Ignore input while agent speaks
-        
-        let interimTranscript = '';
-        let finalTranscript = '';
-        
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) {
-                finalTranscript += event.results[i][0].transcript;
-            } else {
-                interimTranscript += event.results[i][0].transcript;
-            }
-        }
-        
-        const transcript = (finalTranscript || interimTranscript).toLowerCase();
-        
-        if (!isAwake) {
-            // Wake word logic
-            if (transcript.includes('hey enry') || transcript.includes('enry')) {
-                wakeUpAgent();
-            } else if (interimTranscript) {
-                liveTranscript.innerText = `[Sleeping] Heard: ${interimTranscript}`;
-            }
-        } else {
-            // Forward command if awake and final
-            liveTranscript.innerText = `"${transcript}"`;
-            if (finalTranscript) {
-                sendTextCommand(finalTranscript);
-            }
-        }
-    };
-    
-    wakeWordListener.onerror = (event) => {
-        console.error("Speech recognition error:", event.error);
-        if (event.error === 'not-allowed') {
-            voiceStatus.innerText = "Microphone access denied.";
-            btnMic.classList.remove('listening');
-            micIcon.innerText = 'mic_off';
-        }
-    };
-    
-    wakeWordListener.onend = () => {
-        isListening = false;
-        // Auto-restart if we are supposed to be listening (except when agent is speaking)
-        if (!isAgentSpeaking) {
-            try {
-                wakeWordListener.start();
-            } catch(e) {}
-        }
-    };
-    
-    // Start listening right away
-    try {
-        wakeWordListener.start();
-    } catch(e) {}
 }
 
 function wakeUpAgent() {
     if (isAwake) return;
     isAwake = true;
-    addLogItem("Wake word detected. Agent awake.", "success");
-    voiceStatus.innerText = "Agent awake. Go ahead...";
-    liveTranscript.innerText = "Ready for command...";
+    isListening = true;
+    addLogItem("Agent connection started.", "success");
+    voiceStatus.innerText = "Agent awake. Stream is active.";
+    liveTranscript.innerText = "Ready for voice command...";
     micIcon.innerText = 'mic';
     btnMic.classList.add('listening');
-    speak("Namaste, bataiye?");
     
     if (!voiceSocket || voiceSocket.readyState !== WebSocket.OPEN) {
         initVoiceAgentSocket();
@@ -294,8 +327,10 @@ function wakeUpAgent() {
 
 function sleepAgent() {
     isAwake = false;
+    isListening = false;
+    stopAgentAudio();
     addLogItem("Agent returning to sleep mode.", "system");
-    voiceStatus.innerText = "Listening for wake word (Say 'Hey Enry')...";
+    voiceStatus.innerText = "Microphone paused.";
     micIcon.innerText = 'mic_none';
     
     if (voiceSocket) {
@@ -305,9 +340,10 @@ function sleepAgent() {
 }
 
 function toggleListening() {
-    if (isAgentSpeaking) return;
     if (isAwake) {
         sleepAgent();
+        btnMic.classList.remove('listening');
+        micIcon.innerText = 'mic_off';
     } else {
         wakeUpAgent();
     }
@@ -315,9 +351,6 @@ function toggleListening() {
 
 function stopListening() {
     sleepAgent();
-    if (wakeWordListener) {
-        wakeWordListener.stop();
-    }
     btnMic.classList.remove('listening');
     micIcon.innerText = 'mic_off';
     voiceStatus.innerText = "Microphone paused.";
@@ -415,67 +448,51 @@ function handleParsedActionResult(result) {
     }
 }
 
-// Browser Text-To-Speech (Hinglish Accent fallback)
+// Browser Text-To-Speech (Fallback logic - Phase 8 replaces this with server TTS streaming)
 function speak(text) {
     if (!text) return;
 
-    // Echo Cancellation: Pause mic while speaking
+    // Do NOT stop listening. True barge-in means we keep listening.
     isAgentSpeaking = true;
-    if (isListening) {
-        stopListening();
-    }
-
-    // First attempt to play Cartesia TTS from our proxy
+    
     const audioUrl = `/api/tts?text=${encodeURIComponent(text)}`;
-    const audio = new Audio(audioUrl);
+    activeAudio = new Audio(audioUrl);
 
-    audio.onended = () => {
+    activeAudio.onended = () => {
         isAgentSpeaking = false;
-        voiceStatus.innerText = "Click the Microphone to speak a command.";
+        activeAudio = null;
+        voiceStatus.innerText = "Enry is listening...";
     };
 
-    audio.play()
+    activeAudio.play()
         .then(() => {
             console.log("Playing speech via Cartesia TTS...");
             voiceStatus.innerText = "🔊 Enry is speaking...";
         })
         .catch(err => {
-            console.warn("Cartesia TTS API unavailable or not configured. Falling back to browser SpeechSynthesis.", err);
+            console.warn("Cartesia TTS API unavailable, falling back...", err);
             browserSpeakFallback(text);
         });
 }
 
 function browserSpeakFallback(text) {
     if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel(); // Cancel active speech
+        window.speechSynthesis.cancel();
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.rate = 0.95;
         
-        // Try to find an Indian English voice for Hinglish accent if possible
         const voices = window.speechSynthesis.getVoices();
         const indianVoice = voices.find(voice => voice.lang.includes('en-IN') || voice.lang.includes('hi-IN'));
-        if (indianVoice) {
-            utterance.voice = indianVoice;
-        }
+        if (indianVoice) utterance.voice = indianVoice;
         
         utterance.onend = () => {
             isAgentSpeaking = false;
-            if (isAwake) {
-                voiceStatus.innerText = "Agent awake. Go ahead...";
-            } else {
-                voiceStatus.innerText = "Listening for wake word (Say 'Hey Enry')...";
-            }
-            try { wakeWordListener.start(); } catch(e) {}
+            voiceStatus.innerText = "Enry is listening...";
         };
         
         window.speechSynthesis.speak(utterance);
     } else {
         isAgentSpeaking = false;
-        if (isAwake) {
-            voiceStatus.innerText = "Agent awake. Go ahead...";
-        } else {
-            voiceStatus.innerText = "Listening for wake word (Say 'Hey Enry')...";
-        }
     }
 }
 
@@ -624,51 +641,80 @@ function setupEventListeners() {
 
 // --- VOICE AGENT WEBSOCKET HANDLERS ---
 
+let activeGenerationId = null;
+let playQueue = [];
+let isPlaying = false;
+
+function playNextAudioChunk() {
+    if (playQueue.length === 0) {
+        isPlaying = false;
+        return;
+    }
+    isPlaying = true;
+    const chunk = playQueue.shift();
+    
+    const source = audioContext.createBufferSource();
+    source.buffer = chunk;
+    source.connect(audioContext.destination);
+    source.onended = playNextAudioChunk;
+    source.start();
+}
+
+function handleServerTtsMessage(data) {
+    if (activeGenerationId && data.generation_id !== activeGenerationId) {
+        // Discard old generation chunks after barge-in
+        return;
+    }
+    activeGenerationId = data.generation_id;
+    
+    const binaryStr = window.atob(data.data);
+    const len = binaryStr.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+        bytes[i] = binaryStr.charCodeAt(i);
+    }
+    
+    const int16 = new Int16Array(bytes.buffer);
+    const float32 = new Float32Array(int16.length);
+    for(let i=0; i<int16.length; i++) float32[i] = int16[i] / 0x7FFF;
+    
+    const audioBuffer = audioContext.createBuffer(1, float32.length, 16000);
+    audioBuffer.getChannelData(0).set(float32);
+    
+    playQueue.push(audioBuffer);
+    if (!isPlaying) playNextAudioChunk();
+}
+
 function initVoiceAgentSocket() {
-    const wsUrl = `ws://${window.location.hostname}:8001/ws`;
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws/voice`;
     console.log(`Connecting to Voice Agent WebSocket: ${wsUrl}`);
     
     voiceSocket = new WebSocket(wsUrl);
     
     voiceSocket.onopen = () => {
         console.log("Connected to Voice Agent WebSocket.");
-        addLogItem("Connected to voice agent server.", "system");
-        
-        // Send start message
-        voiceSocket.send(JSON.stringify({
-            type: "start",
-            call_id: "enry-session-" + Date.now(),
-            from: "user",
-            to: "agent",
-            agent_call_id: "agent-session-" + Date.now(),
-            agent: {
-                id: "enry_agent"
-            }
-        }));
+        addLogItem("Connected to voice gateway.", "system");
     };
     
     voiceSocket.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
-            console.log("WebSocket message received:", data);
             
-            if (data.type === "message") {
-                if (data.content && data.content.trim()) {
-                    liveTranscript.innerText = `"${data.content}"`;
-                    speak(data.content);
-                    addLogItem(`Enry: ${data.content}`, "success");
-                }
+            if (data.type === "transcript") {
+                liveTranscript.innerText = `"${data.text}"`;
+                addLogItem(`You: ${data.text}`, "system");
             } 
-            else if (data.type === "end_call") {
-                addLogItem("Agent ended the call.", "system");
-                speak("Alvida!");
-                sleepAgent();
+            else if (data.type === "tts") {
+                isAgentSpeaking = true;
+                handleServerTtsMessage(data);
+                voiceStatus.innerText = "🔊 Enry is speaking...";
             }
-            else if (data.type === "tool_call") {
-                if (data.name === "execute_ledger_command" && data.result) {
-                    handleLedgerToolResult(data.result);
-                }
-            } 
+            else if (data.type === "tts_end") {
+                activeGenerationId = null; // Clear so new turns can start
+                isAgentSpeaking = false;
+                voiceStatus.innerText = "Enry is listening...";
+            }
             else if (data.type === "error") {
                 console.error("Voice Agent error:", data.content);
                 addLogItem(`Agent Error: ${data.content}`, "error");
@@ -679,7 +725,7 @@ function initVoiceAgentSocket() {
     };
     
     voiceSocket.onclose = (event) => {
-        if (!isAwake) return; // Do not automatically reconnect if sleeping
+        if (!isAwake) return; 
         console.warn("Voice Agent WebSocket disconnected. Reconnecting in 3 seconds...", event.reason);
         addLogItem("Voice agent server disconnected. Retrying...", "error");
         setTimeout(() => { if (isAwake) initVoiceAgentSocket(); }, 3000);

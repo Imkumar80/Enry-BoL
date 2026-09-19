@@ -62,6 +62,7 @@ async def tool_node(state: EnryState) -> dict:
     last_msg = messages[-1]
 
     results = []
+    executed = []
 
     if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
         for tool_call in last_msg.tool_calls:
@@ -82,8 +83,13 @@ async def tool_node(state: EnryState) -> dict:
                     logger.error(result_str, exc_info=True)
 
             results.append(ToolMessage(content=str(result_str), tool_call_id=tool_id))
+            executed.append({
+                "tool_name": tool_name,
+                "tool_args": tool_args,
+                "result": str(result_str),
+            })
 
     return {
         "messages": results,
-        "action_result": {"tool_results": [r.content for r in results]} if results else None,
+        "action_result": {"executed": executed} if executed else None,
     }

@@ -1,6 +1,22 @@
+# Enry-BoL Dependencies
 fastapi
 uvicorn
 pydantic
 python-dotenv
-google-generativeai
 python-multipart
+
+# LangGraph + Ollama
+langgraph
+langchain-ollama
+langchain-core
+
+# Voice Pipeline
+webrtcvad-wheels
+deepgram-sdk
+httpx
+
+# Legacy NLU Parser (Gemini fallback)
+google-generativeai
+
+# Optional: Local ASR fallback
+# faster-whisper

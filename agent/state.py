@@ -1,19 +1,29 @@
-from typing import TypedDict, List, Optional, Dict, Any
+"""
+agent/state.py — LangGraph State Schema
+=========================================
+Defines the conversation state for the Enry agent.
+Raw audio, WebSocket objects, VAD state, and TTS playback state
+are explicitly excluded.
+"""
+
+from typing import TypedDict, Optional, Any
+from langchain_core.messages import BaseMessage
+from langgraph.graph import add_messages
+from typing import Annotated
+
 
 class EnryState(TypedDict):
-    """
-    The strict conversation state for the LangGraph agent.
-    Raw audio is explicitly kept OUT of this state.
-    """
-    messages: List[Dict[str, Any]]
-    
-    # Tool Execution State
-    current_intent: Optional[str]
-    entities: Dict[str, Any]
-    action_result: Optional[Dict[str, Any]]
+    """LangGraph state for the Enry voice agent."""
 
-    # Conversation Control State
+    # Conversation history (LangChain messages)
+    messages: Annotated[list, add_messages]
+
+    # Current turn context
+    current_intent: Optional[str]
+    entities: dict
+    action_result: Optional[dict]
     turn_id: str
-    user_is_speaking: bool
-    agent_is_speaking: bool
-    interrupted: bool
+
+    # Financial confirmation
+    needs_confirmation: bool
+    confirmation_data: Optional[dict]

@@ -10,6 +10,7 @@ from typing import Optional, Callable, Awaitable
 
 from voice.asr import StreamingASR, ASRPartial, ASRFinal, create_asr
 from voice.vad import VoiceActivityDetector, VADEvent
+from agent.session import set_session_id, reset_session_id
 from voice.protocol import (
     ServerVAD, ServerTranscript, ServerAgentState, ServerAgentText,
     ServerTTSStart, ServerTTSChunk, ServerTTSEnd, ServerAction, ServerError,
@@ -218,9 +219,13 @@ class TurnManager:
         self._record("graph_start")
         try:
             from agent.graph import process_turn
-            result = await process_turn(
-                transcript, self._conversation_messages, self._pending_confirmation
-            )
+            token = set_session_id(self.session_id)
+            try:
+                result = await process_turn(
+                    transcript, self._conversation_messages, self._pending_confirmation
+                )
+            finally:
+                reset_session_id(token)
             if generation_at_start != self.generation_id:
                 return
 
@@ -274,7 +279,11 @@ class TurnManager:
         self._pending_confirmation = None
         try:
             from agent.graph import execute_confirmed_action
-            result = await execute_confirmed_action(conf, self._conversation_messages)
+            token = set_session_id(self.session_id)
+            try:
+                result = await execute_confirmed_action(conf, self._conversation_messages)
+            finally:
+                reset_session_id(token)
             if generation_at_start != self.generation_id:
                 return
             self._record("graph_done")

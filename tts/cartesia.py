@@ -1,104 +1,114 @@
 """
-tts/cartesia.py — Cartesia Sonic TTS Implementation
-=====================================================
-Uses the Cartesia REST streaming API to generate audio.
-Streams audio chunks as they arrive for low latency.
-Supports immediate cancellation via generation_id tracking.
+tts/cartesia.py — Cartesia Sonic realtime TTS provider.
 
-Configuration:
-  CARTESIA_API_KEY  — required
-  CARTESIA_VOICE_ID — optional (defaults to built-in Indian voice)
+Uses Cartesia's realtime WebSocket API when available. The server emits raw
+PCM16 audio so the browser can play chunks without trying to decode arbitrary
+MP3 fragments.
 """
 
 import os
-import json
-import base64
 import asyncio
+import base64
+import json
 import logging
-from typing import AsyncGenerator, Set
+from typing import AsyncGenerator
 
-import httpx
+import websockets
+
 from tts.base import TTSProvider
 
 logger = logging.getLogger("tts.cartesia")
 
 
 class CartesiaTTS(TTSProvider):
-    """
-    Cartesia Sonic TTS with streaming and cancellation.
-    Uses the REST /tts/bytes endpoint for simplicity and reliability.
-    Audio is returned as MP3 and chunked for streaming.
-    """
-
-    # Class-level set of cancelled generation IDs
-    _cancelled_generations: Set[int] = set()
-
     def __init__(self):
         self._api_key = os.getenv("CARTESIA_API_KEY", "")
-        self._voice_id = os.getenv("CARTESIA_VOICE_ID", "3b554273-4299-48b9-9aaf-eefd438e3941")
-        self._url = "https://api.cartesia.ai/tts/bytes"
+        self._voice_id = os.getenv(
+            "CARTESIA_VOICE_ID",
+            "3b554273-4299-48b9-9aaf-eefd438e3941",
+        )
+        self._model_id = os.getenv("CARTESIA_MODEL_ID", "sonic-3")
+        self._sample_rate = int(os.getenv("CARTESIA_SAMPLE_RATE", "24000"))
+        self._active: dict[int, asyncio.Event] = {}
 
     async def stream(self, text: str, generation_id: int) -> AsyncGenerator[str, None]:
-        """
-        Stream TTS audio for the given text.
-        Yields base64-encoded MP3 audio chunks.
-        """
-        if not self._api_key or self._api_key == "your_cartesia_key_here":
-            logger.error("Cartesia API key not configured")
-            return
-
+        if not self._api_key:
+            raise EnvironmentError("CARTESIA_API_KEY not set")
         if not text.strip():
             return
 
-        # Clear this generation from cancelled set (fresh start)
-        self._cancelled_generations.discard(generation_id)
+        cancelled = asyncio.Event()
+        self._active[generation_id] = cancelled
 
-        payload = {
-            "model_id": "sonic",
-            "transcript": text,
-            "voice": {
-                "mode": "id",
-                "id": self._voice_id,
-            },
-            "output_format": {
-                "container": "mp3",
-                "encoding": "mp3",
-                "sample_rate": 44100,
-            },
-        }
-
+        # Cartesia's realtime websocket protocol may evolve; keep all wire
+        # details in this provider so the rest of the voice pipeline stays
+        # provider-agnostic.
+        uri = "wss://api.cartesia.ai/tts/websocket"
         headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Cartesia-Version": "2024-06-10",
-            "Content-Type": "application/json",
+            "X-API-Key": self._api_key,
+            "Cartesia-Version": os.getenv("CARTESIA_VERSION", "2025-04-16"),
         }
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                async with client.stream("POST", self._url, json=payload, headers=headers) as response:
-                    if response.status_code != 200:
-                        error_body = await response.aread()
-                        logger.error(f"Cartesia error {response.status_code}: {error_body.decode()}")
+            async with websockets.connect(
+                uri,
+                additional_headers=headers,
+                ping_interval=20,
+                ping_timeout=20,
+                close_timeout=1,
+                max_size=4 * 1024 * 1024,
+            ) as ws:
+                await ws.send(json.dumps({
+                    "model_id": self._model_id,
+                    "transcript": text,
+                    "voice": {"mode": "id", "id": self._voice_id},
+                    "output_format": {
+                        "container": "raw",
+                        "encoding": "pcm_s16le",
+                        "sample_rate": self._sample_rate,
+                    },
+                    "context_id": str(generation_id),
+                }))
+
+                async for raw in ws:
+                    if cancelled.is_set():
                         return
 
-                    # Stream chunks as they arrive
-                    chunk_size = 4096  # ~4KB chunks for smooth streaming
-                    async for chunk in response.aiter_bytes(chunk_size):
-                        # Check if this generation was cancelled
-                        if generation_id in self._cancelled_generations:
-                            logger.info(f"TTS generation {generation_id} cancelled mid-stream")
-                            self._cancelled_generations.discard(generation_id)
-                            return
+                    if isinstance(raw, bytes):
+                        if raw:
+                            yield base64.b64encode(raw).decode("ascii")
+                        continue
 
-                        if chunk:
-                            yield base64.b64encode(chunk).decode("utf-8")
+                    try:
+                        message = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
 
-        except httpx.TimeoutException:
-            logger.error("Cartesia TTS timeout")
-        except Exception as e:
-            logger.error(f"Cartesia TTS error: {e}", exc_info=True)
+                    # Realtime responses commonly carry audio as base64 in
+                    # a data/audio field. End events are provider-specific.
+                    audio = message.get("data") or message.get("audio")
+                    if audio:
+                        if isinstance(audio, str):
+                            yield audio
+                        else:
+                            yield base64.b64encode(audio).decode("ascii")
+
+                    msg_type = str(message.get("type", "")).lower()
+                    if msg_type in {"done", "complete", "flush_done", "error"}:
+                        if msg_type == "error":
+                            raise RuntimeError(str(message.get("error") or message))
+                        return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Cartesia realtime TTS failed")
+            raise
+        finally:
+            self._active.pop(generation_id, None)
 
     async def cancel(self, generation_id: int):
-        """Cancel an active TTS generation. The stream will stop yielding chunks."""
-        logger.info(f"Cartesia TTS: Cancel generation {generation_id}")
-        self._cancelled_generations.add(generation_id)
+        event = self._active.get(generation_id)
+        if event:
+            event.set()
+
+

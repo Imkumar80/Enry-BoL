@@ -235,7 +235,7 @@ def create_invoice(customer_name, items_list, conn=None):
                 raise ValueError("Invoice quantity must be greater than zero")
             if qty > db_item["stock"]:
                 raise ValueError(
-                    f"Insufficient stock for {db_item["name"]}: requested {qty}, available {db_item["stock"]}"
+                    f"Insufficient stock for {db_item['name']}: requested {qty}, available {db_item['stock']}"
                 )
             price = db_item["price"]
             item_total = price * qty

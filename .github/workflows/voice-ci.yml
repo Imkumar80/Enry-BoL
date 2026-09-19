@@ -8,11 +8,14 @@ on:
   pull_request:
 
 jobs:
-  python-syntax:
+  voice-core:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
       - run: python -m compileall -q voice agent tts db.py app.py
+      - run: pytest -q tests/test_voice_core.py

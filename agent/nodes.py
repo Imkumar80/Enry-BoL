@@ -36,7 +36,7 @@ async def agent_node(state: EnryState) -> dict:
         intent = tool_call["name"]
 
         # Check if this is a financial tool that needs confirmation
-        if intent in FINANCIAL_TOOLS:
+        if intent in FINANCIAL_TOOLS or intent == "checkout_bill":
             needs_confirmation = True
             confirmation_data = {
                 "tool_name": intent,

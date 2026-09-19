@@ -13,7 +13,7 @@ langchain-core
 # Voice pipeline
 webrtcvad-wheels
 deepgram-sdk
-websockets>=15
+cartesia>=3.0.0
 httpx
 
 # Legacy NLU parser (not used by realtime voice path)

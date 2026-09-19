@@ -19,8 +19,8 @@ class VoiceActivityDetector:
     def __init__(self):
         self.mode = int(os.getenv("VAD_MODE", "2"))
         self.frame_ms = int(os.getenv("VAD_FRAME_MS", "20"))
-        self.end_silence_ms = int(os.getenv("VAD_END_SILENCE_MS", "450"))
-        self.min_speech_ms = int(os.getenv("MIN_SPEECH_MS", "150"))
+        self.end_silence_ms = int(os.getenv("VAD_END_SILENCE_MS", "250"))
+        self.min_speech_ms = int(os.getenv("MIN_SPEECH_MS", "120"))
         self.sample_rate = 16000
 
         if self.frame_ms not in (10, 20, 30):

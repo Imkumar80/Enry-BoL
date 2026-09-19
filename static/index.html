@@ -12,183 +12,221 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div class="glass-bg"></div>
-    <div class="app-container">
-        <!-- HEADER -->
-        <header class="app-header">
-            <div class="logo-area">
-                <span class="material-icons-round logo-icon">settings_voice</span>
-                <div class="logo-text">
-                    <h1>Enry <span>एनरी</span></h1>
-                    <p>Voice OS for Kiranas & SMBs</p>
+    <div class="dashboard-layout">
+        <!-- SIDEBAR -->
+        <aside class="sidebar">
+            <div class="sidebar-logo">
+                <span class="material-icons-round" style="color: #6366F1;">settings_voice</span>
+                <span class="logo-text">Enry Platform</span>
+            </div>
+
+            <div class="nav-group">
+                <div class="nav-label">WORKSPACE</div>
+                <a href="#" class="nav-item active"><span class="material-icons-round">dashboard</span> Dashboard</a>
+                <a href="#observability" class="nav-item"><span class="material-icons-round">troubleshoot</span> Live Monitoring</a>
+            </div>
+
+            <div class="nav-group">
+                <div class="nav-label">DATA</div>
+                <a href="#" class="nav-item"><span class="material-icons-round">group</span> Customers (Khata)</a>
+                <a href="#" class="nav-item"><span class="material-icons-round">inventory_2</span> Inventory</a>
+                <a href="#" class="nav-item"><span class="material-icons-round">receipt_long</span> Invoices</a>
+            </div>
+            
+            <div class="sidebar-footer">
+                <div class="nav-group">
+                    <div class="nav-label">SYSTEM</div>
+                    <a href="#" class="nav-item"><span class="material-icons-round">settings</span> Settings</a>
                 </div>
             </div>
-            <div class="status-badge" id="statusBadge">
-                <span class="pulse-dot green"></span>
-                <span>Active Session</span>
+        </aside>
+
+        <!-- MAIN CONTENT -->
+        <main class="main-content">
+            
+            <!-- TOP HEADER -->
+            <header class="main-header">
+                <div>
+                    <h1>Enry</h1>
+                    <p>Khata, POS & Inventory • Kirana Stores • Incoming commands</p>
+                </div>
+                <button class="btn btn-outline" id="btnAddCustomer">
+                    <span class="material-icons-round" style="font-size: 16px;">person_add</span>
+                    Add Customer
+                </button>
+            </header>
+
+            <div class="stats-banner">
+                <span class="material-icons-round" style="font-size: 14px;">info</span>
+                Based on 44.9K production conversations handled to date.
             </div>
-        </header>
 
-        <!-- MAIN LAYOUT -->
-        <main class="app-main">
-            <!-- LEFT PANEL: Ledger & Credit (Khata) -->
-            <section class="panel panel-left" id="khataPanel">
-                <div class="panel-header">
-                    <div class="panel-title">
-                        <span class="material-icons-round">account_balance_wallet</span>
-                        <h2>Udhaar Khata (Ledger)</h2>
+            <!-- STATS GRID -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-title">Total interactions</div>
+                    <div class="stat-value">12,450</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-title">Udhaar Recorded</div>
+                    <div class="stat-value">71%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-title">Equivalent experience</div>
+                    <div class="stat-value">3.0 years</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-title">Avg. interaction duration</div>
+                    <div class="stat-value">1m 21s</div>
+                </div>
+            </div>
+
+            <!-- SCENARIOS -->
+            <div class="scenarios-section">
+                <div class="section-header">
+                    <h2>Commonly handled scenarios</h2>
+                    <p>Share of relevant conversations handled to date</p>
+                </div>
+                
+                <div class="scenarios-grid">
+                    <div class="scenario-card">
+                        <h3>Udhaar Khata</h3>
+                        <p>Give shopkeepers a straight answer on customer credit and record new udhaar.</p>
+                        <div class="scenario-stat">34% <span>of conversations</span></div>
                     </div>
-                    <button class="btn-icon" id="btnAddCustomer" title="Add Customer">
-                        <span class="material-icons-round">person_add</span>
+                    <div class="scenario-card">
+                        <h3>POS Billing</h3>
+                        <p>Help callers add items to their active cart and generate checkout bills.</p>
+                        <div class="scenario-stat">27% <span>of conversations</span></div>
+                    </div>
+                    <div class="scenario-card">
+                        <h3>Inventory Check</h3>
+                        <p>Help callers with stock checks and update quantities on the fly.</p>
+                        <div class="scenario-stat">22% <span>of conversations</span></div>
+                    </div>
+                </div>
+                <div class="scenarios-footer">
+                    <span>GREAT FIT FOR TEAMS AT ORGANIZATIONS SUCH AS</span>
+                    <div class="org-chips">
+                        <span class="org-chip"><span class="dot red"></span> Kirana Stores</span>
+                        <span class="org-chip"><span class="dot green"></span> Supermarkets</span>
+                        <span class="org-chip"><span class="dot blue"></span> Medical Shops</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TALK TO AGENT -->
+            <div class="talk-section">
+                <h2>Talk to agent</h2>
+                <p>Interview the agent before you deploy — a live conversation right here in the browser.</p>
+                
+                <div class="talk-box">
+                    <div class="agent-profile">
+                        <div class="avatar"><span class="material-icons-round">face</span></div>
+                        <div class="agent-meta">
+                            <h4>Enry is ready</h4>
+                            <p id="voiceStatus">Start the conversation — Enry will treat you like a real customer.</p>
+                        </div>
+                    </div>
+                    
+                    <button class="btn btn-primary" id="btnMic">
+                        <span class="material-icons-round" id="micIcon">mic</span> Start conversation
                     </button>
+                    <!-- HIDDEN ELEMENTS FOR COMPATIBILITY with app.js -->
+                    <div id="micRipple" style="display:none;"></div>
                 </div>
 
-                <!-- Customer Directory -->
-                <div class="sub-panel">
-                    <h3>Customers</h3>
-                    <div class="customer-list" id="customerList">
-                        <!-- Loaded via JS -->
-                        <div class="loading-spinner"></div>
+                <div class="try-asking">
+                    <span class="try-label">TRY ASKING</span>
+                    <div class="chips-scroll">
+                        <button class="ask-chip" onclick="sendTextCommand('Ramesh ko 500 udhaar likho')">"Ramesh ko 500 udhaar likho?"</button>
+                        <button class="ask-chip" onclick="sendTextCommand('Kitna Surf Excel bacha hai?')">"Kitna Surf Excel bacha hai?"</button>
+                        <button class="ask-chip" onclick="sendTextCommand('Naya bill banao')">"Naya bill banao"</button>
+                        <button class="ask-chip" onclick="sendTextCommand('Do packet biscuit add karo')">"Do packet biscuit add karo"</button>
+                        <button class="ask-chip" onclick="sendTextCommand('Aaj ka total kya hai?')">"Aaj ka total kya hai?"</button>
                     </div>
                 </div>
 
-                <!-- Credit/Payment History -->
-                <div class="sub-panel">
-                    <h3>Recent Transactions</h3>
-                    <div class="transaction-history" id="transactionHistory">
-                        <!-- Loaded via JS -->
-                    </div>
-                </div>
-            </section>
+                <!-- Hidden inputs for compatibility -->
+                <input type="hidden" id="txtManualCommand">
+                <button type="hidden" id="btnSendCommand" style="display:none;"></button>
+            </div>
 
-            <!-- MIDDLE PANEL: POS Billing & Cart -->
-            <section class="panel panel-middle" id="billingPanel">
-                <div class="panel-header">
-                    <div class="panel-title">
-                        <span class="material-icons-round">shopping_cart</span>
-                        <h2>POS Billing (Bill Calculator)</h2>
-                    </div>
+            <!-- OBSERVABILITY (Live DB & Logs) -->
+            <div class="observability-section" id="observability">
+                <div class="section-header">
+                    <h2>Live Database & Observability</h2>
+                    <p>Watch the backend update in real-time as Enry executes operations.</p>
                 </div>
-
-                <!-- Current Bill Context -->
-                <div class="cart-context">
-                    <div class="context-label">Active Customer:</div>
-                    <div class="context-value" id="activeCustomerName">Walk-in Customer</div>
-                </div>
-
-                <!-- Cart Table -->
-                <div class="cart-container">
-                    <table class="cart-table">
-                        <thead>
-                            <tr>
-                                <th>Product</th>
-                                <th>Qty</th>
-                                <th>Price</th>
-                                <th>Total</th>
-                                <th></th>
-                            </tr>
-                        </thead>
-                        <tbody id="cartItems">
-                            <!-- Items added via Voice/JS -->
-                            <tr class="empty-cart-row">
-                                <td colspan="5" class="empty-text">Cart is empty. Speak "Ek packet Britannia biscuit add karo" or select a product.</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-
-                <!-- Bill Total & Checkout -->
-                <div class="cart-summary">
-                    <div class="summary-row">
-                        <span>Items Count:</span>
-                        <span id="cartCount">0</span>
-                    </div>
-                    <div class="summary-row grand-total">
-                        <span>Grand Total:</span>
-                        <span id="cartTotal">₹0.00</span>
-                    </div>
-                    <div class="checkout-actions">
-                        <button class="btn btn-secondary" id="btnClearCart">Clear</button>
-                        <button class="btn btn-primary" id="btnCheckout">
-                            <span class="material-icons-round">receipt_long</span>
-                            Finish & Print Bill
-                        </button>
-                    </div>
-                </div>
-            </section>
-
-            <!-- RIGHT PANEL: Voice OS Controller -->
-            <section class="panel panel-right" id="voicePanel">
-                <div class="panel-header">
-                    <div class="panel-title">
-                        <span class="material-icons-round">graphic_eq</span>
-                        <h2>Voice Assistant Layer</h2>
-                    </div>
-                </div>
-
-                <!-- Glowing Microphone Area -->
-                <div class="mic-container">
-                    <div class="mic-ripple" id="micRipple"></div>
-                    <button class="mic-btn" id="btnMic">
-                        <span class="material-icons-round" id="micIcon">mic</span>
-                    </button>
-                    <div class="voice-status" id="voiceStatus">Click the mic or press Space to speak</div>
-                </div>
-
-                <!-- Command Transcription Screen -->
-                <div class="console-box">
-                    <div class="console-label">Live Transcription:</div>
-                    <div class="console-text placeholder-text" id="liveTranscript">
-                        "E.g., Ramesh ka bill banao, 2 packet biscuit daal do..."
-                    </div>
-                </div>
-
-                <!-- AI Parser Output Details -->
-                <div class="nlu-output" id="nluOutputCard" style="display: none;">
-                    <h3>AI Intent Parser Output</h3>
-                    <div class="nlu-details">
-                        <div class="nlu-row">
-                            <span class="nlu-key">Intent:</span>
-                            <span class="nlu-val" id="nluIntent">-</span>
+                
+                <div class="live-grid">
+                    <!-- Live Transcript & Intent -->
+                    <div class="live-card">
+                        <h3>Live Transcription & Intent</h3>
+                        <div class="console-box">
+                            <div class="console-text placeholder-text" id="liveTranscript">Waiting for voice input...</div>
                         </div>
-                        <div class="nlu-row">
-                            <span class="nlu-key">Explanation:</span>
-                            <span class="nlu-val" id="nluExplanation">-</span>
+                        <div class="nlu-output" id="nluOutputCard" style="display: none; margin-top: 10px;">
+                            <div class="nlu-details">
+                                <div class="nlu-row">
+                                    <span class="nlu-key">Intent:</span>
+                                    <span class="nlu-val" id="nluIntent">-</span>
+                                </div>
+                                <div class="nlu-row">
+                                    <span class="nlu-key">Explanation:</span>
+                                    <span class="nlu-val" id="nluExplanation">-</span>
+                                </div>
+                                <div class="nlu-entities" id="nluEntitiesContainer"></div>
+                            </div>
                         </div>
-                        <div class="nlu-entities" id="nluEntitiesContainer">
-                            <!-- Dynamic Entity Badges -->
+                    </div>
+
+                    <!-- Voice Operations Log -->
+                    <div class="live-card">
+                        <h3>Operations Log</h3>
+                        <div class="operations-log" id="operationsLog">
+                            <!-- Logs go here -->
+                        </div>
+                    </div>
+
+                    <!-- Khata -->
+                    <div class="live-card">
+                        <h3>Udhaar Khata</h3>
+                        <div class="customer-list" id="customerList"></div>
+                        <h4 style="margin-top: 15px; font-size: 12px; color: #9CA3AF;">Recent Transactions</h4>
+                        <div class="transaction-history" id="transactionHistory" style="max-height: 120px;"></div>
+                    </div>
+
+                    <!-- Cart -->
+                    <div class="live-card">
+                        <h3>POS Cart (<span id="activeCustomerName">Walk-in Customer</span>)</h3>
+                        <div class="cart-container" style="max-height: 150px; overflow-y: auto;">
+                            <table class="cart-table">
+                                <tbody id="cartItems">
+                                    <tr class="empty-cart-row"><td class="empty-text">Cart is empty.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="cart-summary">
+                            <div class="summary-row"><span>Items:</span> <span id="cartCount">0</span></div>
+                            <div class="summary-row grand-total"><span>Total:</span> <span id="cartTotal">₹0.00</span></div>
+                            <div style="display:flex; gap:10px; margin-top:10px;">
+                                <button class="btn btn-outline" id="btnClearCart" style="flex:1;">Clear</button>
+                                <button class="btn btn-primary" id="btnCheckout" style="flex:2;">Checkout</button>
+                            </div>
                         </div>
                     </div>
                 </div>
+            </div>
 
-                <!-- Manual Command Input (Keyboard Override) -->
-                <div class="manual-input-box">
-                    <input type="text" id="txtManualCommand" placeholder="Type a Hinglish/English command...">
-                    <button id="btnSendCommand">
-                        <span class="material-icons-round">send</span>
-                    </button>
-                </div>
-
-                <!-- Voice Action Log Timeline -->
-                <div class="sub-panel">
-                    <h3>Voice OS Operations Log</h3>
-                    <div class="operations-log" id="operationsLog">
-                        <div class="log-item system">
-                            <span class="log-time">17:00</span>
-                            <span class="log-msg">Voice OS initialization successful. Offline Regex fallback ready.</span>
-                        </div>
-                    </div>
-                </div>
-            </section>
         </main>
     </div>
 
-    <!-- POPUP MODALS -->
     <!-- Add Customer Modal -->
     <div class="modal" id="modalCustomer" style="display: none;">
         <div class="modal-content">
             <span class="close-btn" id="btnCloseCustomerModal">&times;</span>
-            <h2>Add New Customer (Khata)</h2>
+            <h2>Add New Customer</h2>
             <form id="formAddCustomer">
                 <div class="form-group">
                     <label for="custName">Customer Name:</label>
@@ -202,7 +240,7 @@
                     <label for="custBalance">Initial Credit Owed (Udhaar):</label>
                     <input type="number" id="custBalance" step="0.01" value="0.00">
                 </div>
-                <button type="submit" class="btn btn-primary">Save Customer</button>
+                <button type="submit" class="btn btn-primary" style="width: 100%;">Save Customer</button>
             </form>
         </div>
     </div>
